@@ -361,6 +361,53 @@
     });
 
 
+    $('.plugin-local-install').click(() => {
+        component.popup({
+            submit: '/admin/api/app/localInstall',
+            tab: [
+                {
+                    name: `${util.icon("fa-duotone fa-regular fa-folder-arrow-up")} 本地安装`,
+                    form: [
+                        {
+                            title: "安装包",
+                            name: "path",
+                            uploadUrl: '/admin/api/upload/send?mime=other',
+                            type: "file",
+                            exts: "zip",
+                            acceptMime: ".zip",
+                            placeholder: "点击上传或拖动文件(.zip)",
+                            required: true,
+                            tips: "请直接在插件根目录打包（不要把插件文件夹本身打进 zip），仅支持 zip 格式，请勿设置压缩密码。"
+                        },
+                        {
+                            title: "插件类型",
+                            name: "type",
+                            required: true,
+                            type: "radio",
+                            dict: "_store_plugin_type",
+                            default: 0
+                        },
+                        {
+                            title: "插件标识",
+                            name: "plugin_key",
+                            required: true,
+                            type: "input",
+                            placeholder: "插件唯一标识，将作为安装目录名，仅支持字母/数字/下划线"
+                        }
+                    ]
+                }
+            ],
+            autoPosition: true,
+            height: "auto",
+            confirmText: `${util.icon("fa-duotone fa-regular fa-folder-arrow-up")} 确认安装`,
+            width: "480px",
+            done: () => {
+                window.location.reload();
+            }
+        });
+    });
+
+
     $('.plugin-update-all').click(() => {
         const $updateIns = $('.plugin-update-all span');
 

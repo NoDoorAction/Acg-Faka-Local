@@ -287,6 +287,90 @@ class App extends Manage
     }
 
     /**
+     * 本地 zip 安装：跳过应用商店，直接用本地安装包解压到对应目录。
+     * @return array
+     * @throws JSONException
+     */
+    public function localInstall(): array
+    {
+        $type = (int)$_POST['type'];
+        $pluginKey = trim((string)$_POST['plugin_key']);
+        $path = (string)$_POST['path'];
+
+        if (!preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $pluginKey)) {
+            throw new JSONException("插件标识仅支持字母/数字/下划线，且需以字母开头");
+        }
+        if (!in_array($type, [0, 1, 2], true)) {
+            throw new JSONException("插件类型错误");
+        }
+        if ($path === '' || str_contains($path, '..')) {
+            throw new JSONException("非法的安装包路径");
+        }
+
+        $pluginPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$pluginKey}/",
+            2 => BASE_PATH . "/app/View/User/Theme/{$pluginKey}/",
+            default => BASE_PATH . "/app/Plugin/{$pluginKey}/",
+        };
+        $entryFile = $type === 2 ? $pluginPath . "Config.php" : $pluginPath . "Config/Info.php";
+
+        if (is_file($entryFile)) {
+            throw new JSONException("该插件标识已存在，请先卸载或更换标识");
+        }
+
+        $src = BASE_PATH . $path;
+        if (!is_file($src)) {
+            throw new JSONException("安装包不存在，请重新上传");
+        }
+        if (strtolower((string)pathinfo($src, PATHINFO_EXTENSION)) !== 'zip') {
+            @unlink($src);
+            throw new JSONException("仅支持 zip 安装包");
+        }
+
+        if (!is_dir($pluginPath) && !mkdir($pluginPath, 0777, true)) {
+            throw new JSONException("无法创建插件目录，请检查写入权限");
+        }
+
+        if (!\App\Util\Zip::unzip($src, $pluginPath)) {
+            \App\Util\File::delDirectory($pluginPath);
+            @unlink($src);
+            throw new JSONException("解压失败，请检查安装包是否完整或目录是否可写");
+        }
+
+        // 清理上传缓存
+        @unlink($src);
+
+        if (!is_file($entryFile)) {
+            \App\Util\File::delDirectory($pluginPath);
+            throw new JSONException("安装包格式不正确，未找到入口配置文件，请确认插件类型选择是否正确");
+        }
+
+        // 通用插件 / 支付插件：导入 install.sql（与远程安装行为对齐）
+        if ($type !== 2) {
+            $installSql = $pluginPath . "install.sql";
+            if (is_file($installSql)) {
+                $database = config("database");
+                \Kernel\Util\SQL::import(
+                    $installSql,
+                    $database['host'],
+                    $database['database'],
+                    $database['username'],
+                    $database['password'],
+                    $database['prefix']
+                );
+            }
+        }
+
+        // 通用插件：触发 install 钩子
+        if ($type === 0) {
+            \Kernel\Util\Plugin::runHookState($pluginKey, \Kernel\Annotation\Plugin::INSTALL);
+        }
+
+        ManageLog::log($this->getManage(), "本地安装了应用({$pluginKey})");
+        return $this->json(200, "本地安装完成");
+    }
+
+    /**
      * @return array
      */
     public function upgrade(): array

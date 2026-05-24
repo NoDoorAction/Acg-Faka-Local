@@ -174,12 +174,6 @@ aes-256-cbc
 
 ## 6. wrapper bytecode
 
-导出命令：
-
-```powershell
-node .\export_plugin_vm_bytecode.js
-```
-
 输出：
 
 ```text
