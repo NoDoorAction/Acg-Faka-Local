@@ -31,8 +31,9 @@ class Binary
 
     private function generateKey(): string
     {
-        $config = config('database');
-        return strtoupper(substr(md5($config['database'] . $config['password'] . $config['username'] . $config['prefix'] . __FILE__), 0, 16));
+        // 本地化改造：固定密钥，移除对数据库配置的依赖，
+        // 让加密数据可跨服务器迁移。
+        return "ACGFAKALOCALHWID";
     }
 
     /**

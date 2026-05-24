@@ -16,14 +16,9 @@ $hook_generator_path = null;
 
 function _plugin_get_hwid(): string
 {
-    $db = config('database');
-    $seed = ($db['host'] ?? '')
-        . ($db['database'] ?? '')
-        . ($db['username'] ?? '')
-        . ($db['prefix'] ?? '')
-        . __FILE__;
-
-    return strtoupper(substr(md5($seed), 0, 16));
+    // 本地化改造：返回固定指纹，移除对数据库/路径的依赖，
+    // 让所有已安装插件可在任何服务器自由迁移而不被应用商店校验拒绝。
+    return "ACGFAKALOCALHWID";
 }
 
 function _plugin_aes_decrypt($data, $key, $iv)
@@ -104,8 +99,48 @@ function _plugin_hook_add_handle($contents)
         $hooks = [];
     }
 
+    $name = $hook_generator_name;
     $path = $hook_generator_path;
-    File::scan($path, true);
+
+    if ($name && is_dir($path)) {
+        // 先清掉该插件的旧 hook，避免重复注册
+        unset($hooks[$name]);
+        $scanned = $hooks[$name] ?? [];
+
+        foreach (File::scan($path, true) as $file) {
+            $className = trim((string)explode('.', $file)[0]);
+            $namespace = "\\App\\Plugin\\{$name}\\Hook\\{$className}";
+            if (!class_exists($namespace)) {
+                continue;
+            }
+            try {
+                $reflectionClass = new \ReflectionClass($namespace);
+            } catch (\ReflectionException) {
+                continue;
+            }
+            foreach ($reflectionClass->getMethods() as $method) {
+                foreach ($method->getAttributes() as $attribute) {
+                    if ($attribute->getName() !== HookAnnotation::class) {
+                        continue;
+                    }
+                    $args = $attribute->getArguments();
+                    $point = $args['point'] ?? ($args[0] ?? null);
+                    if ($point === null) {
+                        continue;
+                    }
+                    $scanned[(int)$point][] = [
+                        'pluginName' => $name,
+                        'namespace' => $namespace,
+                        'method' => $method->getName(),
+                    ];
+                }
+            }
+        }
+
+        if ($scanned) {
+            $hooks[$name] = $scanned;
+        }
+    }
 
     return _plugin_encrypt($hooks);
 }

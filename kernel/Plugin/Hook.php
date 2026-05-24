@@ -29,13 +29,20 @@ class Hook
             mkdir($path, 0777, true);
         }
 
-        if (!is_writable(Hook::CACHE_FILE)) {
+        if (is_file(Hook::CACHE_FILE) && !is_writable(Hook::CACHE_FILE)) {
             return;
         }
 
-        $hooks = File::read(Hook::CACHE_FILE, function (string $contents) {
-            return Binary::inst()->unpack($contents, _plugin_get_hwid());
-        }) ?: [];
+        $hooks = is_file(Hook::CACHE_FILE)
+            ? File::read(Hook::CACHE_FILE, function (string $contents) {
+                return Binary::inst()->unpack($contents, _plugin_get_hwid());
+            })
+            : null;
+
+        // 缓存不存在或解密失败（如来自旧服务器的指纹）→ 自动重建
+        if (!is_array($hooks) || $hooks === []) {
+            $hooks = $this->rebuild();
+        }
 
         foreach ($hooks as $points) {
             foreach ($points as $a => $point) {
@@ -53,6 +60,47 @@ class Hook
                 Client::redirect("/", "当前插件未启用");
             }
         }
+    }
+
+    /**
+     * 扫描所有已启用插件，重新构建 hook 缓存。
+     * 用于：解密失败（指纹不匹配）或缓存丢失时的自恢复。
+     * @return array
+     */
+    private function rebuild(): array
+    {
+        $pluginRoot = BASE_PATH . "/app/Plugin/";
+        if (!is_dir($pluginRoot)) {
+            return [];
+        }
+
+        // 先清空缓存文件，让 _plugin_hook_add 从空状态开始
+        if (is_file(Hook::CACHE_FILE)) {
+            @unlink(Hook::CACHE_FILE);
+        }
+
+        foreach (File::scan($pluginRoot) as $name) {
+            $cfgFile = $pluginRoot . $name . "/Config/Config.php";
+            $infoFile = $pluginRoot . $name . "/Config/Info.php";
+            if (!is_file($infoFile) || !is_file($cfgFile)) {
+                continue;
+            }
+            $cfg = (array)require $cfgFile;
+            if ((int)($cfg['STATUS'] ?? 0) !== 1) {
+                continue;
+            }
+            _plugin_hook_add($name);
+        }
+
+        if (!is_file(Hook::CACHE_FILE)) {
+            return [];
+        }
+
+        $hooks = Binary::inst()->unpack(
+            (string)file_get_contents(Hook::CACHE_FILE),
+            _plugin_get_hwid()
+        );
+        return is_array($hooks) ? $hooks : [];
     }
 
     /**
