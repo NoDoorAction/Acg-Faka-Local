@@ -133,10 +133,11 @@ class App implements \App\Service\App
             file_put_contents(BASE_PATH . "/kernel/Install/Lock", Str::generateRandStr(32));
         }
 
+        // 隐私保护：心跳不上报真实站点域名 / 出口 IP
         return (array)$this->post("/open/project/version", [
             "key" => "faka",
-            "domain" => \App\Util\Client::getDomain(),
-            "client_ip" => \App\Util\Client::getAddress()
+            "domain" => "0.0.0.0",
+            "client_ip" => "0.0.0.0",
         ]);
     }
 
@@ -381,7 +382,8 @@ class App implements \App\Service\App
      */
     public function ad(): array
     {
-        return (array)$this->post("/open/project/ad", ["key" => "faka"]);
+        // 隐私保护：不再向应用商店拉取广告
+        return [];
     }
 
     /**
