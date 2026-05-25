@@ -328,7 +328,8 @@
                     }
                 }
 
-                $('.latest-update').click(function () {
+                // off 一次，防御性地清掉任何旧脚本（含缓存的 _admin.js 旧 IIFE）可能绑过的 handler
+                $('.latest-update').off("click").on("click", function () {
                     _HandleUpdate(!_IsLatestVersion);
                 });
             },
@@ -470,10 +471,9 @@
         });
     }
 
-    _LoadStoreUserInfo();
+    // 应用商店账号体系已脱钩，不再加载用户信息 / 服务节点切换
     _LodLatest();
     _LoadPluginUpdates();
     _LoadSchemaHealth();
-    _AppServerSelect();
     _Pjax();
 }();

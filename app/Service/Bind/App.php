@@ -4,16 +4,11 @@ declare(strict_types=1);
 namespace App\Service\Bind;
 
 use App\Util\File;
-use App\Util\Http;
 use App\Util\Migrator;
 use App\Util\Opcache;
+use App\Util\Permission;
 use App\Util\Str;
 use App\Util\Zip;
-use GuzzleHttp\Client;
-use GuzzleHttp\Cookie\CookieJar;
-use GuzzleHttp\Exception\GuzzleException;
-use GuzzleHttp\RequestOptions;
-use Kernel\Annotation\Inject;
 use Kernel\Consts\Base;
 use Kernel\Exception\JSONException;
 use Kernel\Util\Context;
@@ -26,238 +21,138 @@ use Kernel\Util\SQL;
  */
 class App implements \App\Service\App
 {
-
-    #[Inject]
-    private Client $client;
-
     /**
-     * @param string $uri
-     * @param array $data
-     * @param array|null $cookies
-     * @return mixed
-     * @throws JSONException
-     */
-    private function post(string $uri, array $data = [], ?array &$cookies = null): mixed
-    {
-        try {
-            $form = [
-                "form_params" => $data,
-                "verify" => false
-            ];
-            if (is_array($cookies)) {
-                $form["cookies"] = CookieJar::fromArray([
-                    "GOLANG_ID" => $cookies['GOLANG_ID']
-                ], parse_url(self::APP_URL)['host']);
-            }
-            $response = $this->client->post(self::APP_URL . $uri, $form);
-            if ($cookies !== null) {
-                $cookie = implode(";", (array)$response->getHeader("Set-Cookie"));
-                $explode = explode(";", $cookie);
-                $cookies = [];
-                foreach ($explode as $item) {
-                    $it = explode("=", $item);
-                    $cookies[trim((string)$it[0])] = trim((string)$it[1]);
-                }
-            }
-            $res = (array)json_decode((string)$response->getBody()->getContents(), true);
-        } catch (GuzzleException $e) {
-            throw new JSONException("应用商店请求错误");
-        }
-        if ($res['code'] != 200) {
-            throw new JSONException($res['msg']);
-        }
-
-        return $res['data'];
-    }
-
-    /**
-     * @param string $uri
-     * @param array $data
-     * @return mixed
-     * @throws GuzzleException
-     * @throws JSONException
-     */
-    private function storeRequest(string $uri, array $data = []): mixed
-    {
-        $store = config("store");
-        $data['sign'] = Str::generateSignature($data, (string)$store["app_key"]);
-        $response = $this->client->post(self::APP_URL . $uri, [
-            "form_params" => $data,
-            "headers" => ["appId" => (int)$store['app_id'], "appKey" => _plugin_get_hwid()],
-            "verify" => false
-        ]);
-        $res = (array)json_decode((string)$response->getBody()->getContents(), true);
-
-        if ($res['code'] != 200) {
-            throw new JSONException($res['msg']);
-        }
-        return $res['data'];
-    }
-
-    /**
-     * @param string $uri
-     * @param array $data
-     * @return array|null
-     * @throws GuzzleException
-     */
-    private function storeDownload(string $uri, array $data = []): ?string
-    {
-        $store = config("store");
-        $data['sign'] = Str::generateSignature($data, (string)$store["app_key"]);
-
-        $path = BASE_PATH . "/kernel/Install/OS/";
-        if (!is_dir($path)) {
-            mkdir($path, 0777, true);
-        }
-        $fileName = md5((string)time()) . ".zip";
-        $fileHandle = fopen($path . $fileName, "w+");
-        $response = $this->client->post(self::APP_URL . $uri, [
-            "form_params" => $data,
-            "verify" => false,
-            "headers" => ["appId" => (int)$store['app_id'], "appKey" => _plugin_get_hwid()],
-            RequestOptions::SINK => $fileHandle
-        ]);
-
-        if ($response->getStatusCode() === 200) {
-            return $fileName;
-        }
-
-        return null;
-    }
-
-    /**
-     * @return array
-     * @throws JSONException
+     * 旧异次元应用商店心跳已停用。保留方法签名兼容旧调用，仅维护 Install/Lock。
+     * 主程序版本检查改用 Github::latestRelease()。
      */
     public function getVersions(): array
     {
         if (Context::get(Base::LOCK) == "") {
             file_put_contents(BASE_PATH . "/kernel/Install/Lock", Str::generateRandStr(32));
         }
-
-        // 隐私保护：心跳不上报真实站点域名 / 出口 IP
-        return (array)$this->post("/open/project/version", [
-            "key" => "faka",
-            "domain" => "0.0.0.0",
-            "client_ip" => "0.0.0.0",
-        ]);
+        return [];
     }
 
     /**
-     * @param string $key
-     * @param int $type 插件类型
-     * @param int $pluginId
-     * @throws GuzzleException
+     * 从 GitHub 插件仓库安装一个插件。$pluginId 参数为兼容旧前端调用保留，已不使用。
+     *
      * @throws JSONException
      * @throws \ReflectionException
      */
     public function installPlugin(string $key, int $type, int $pluginId): void
     {
-        //默认位置，通用插件
-        $pluginPath = BASE_PATH . "/app/Plugin/{$key}/";
-        $fileInit = file_exists($pluginPath . "/Config/Info.php");
-        if ($type == 1) {
-            //支付插件
-            $pluginPath = BASE_PATH . "/app/Pay/{$key}/";
-            $fileInit = file_exists($pluginPath . "/Config/Info.php");
-        } elseif ($type == 2) {
-            //网站模板
-            $pluginPath = BASE_PATH . "/app/View/User/Theme/{$key}/";
-            $fileInit = file_exists($pluginPath . "/Config.php");
-        }
+        $pluginPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$key}/",
+            2 => BASE_PATH . "/app/View/User/Theme/{$key}/",
+            default => BASE_PATH . "/app/Plugin/{$key}/",
+        };
+        $entryFile = $type === 2 ? $pluginPath . "Config.php" : $pluginPath . "Config/Info.php";
 
-        if (!is_dir($pluginPath)) {
-            mkdir($pluginPath, 0777, true);
-        }
-
-        if ($fileInit) {
+        if (is_file($entryFile)) {
             throw new JSONException("该插件已被安装，请勿重复安装");
         }
 
-        $storeDownload = $this->storeDownload("/store/install", [
-            "plugin_id" => $pluginId
-        ]);
-        if (!$storeDownload) {
-            throw new JSONException("安装失败，请联系技术人员");
-        }
-        //下载完成，开始安装
-        $src = BASE_PATH . "/kernel/Install/OS/{$storeDownload}";
-        if (!Zip::unzip($src, $pluginPath)) {
-            throw new JSONException("安装失败，请检查是否有写入权限");
-        }
-        //安装完成，删除src
-        unlink($src);
-        //判断目标目录是否有install.sqll
-        $installSql = $pluginPath . "install.sql";
-        if (file_exists($installSql)) {
-            $database = config("database");
-            SQL::import($installSql, $database['host'], $database['database'], $database['username'], $database['password'], $database['prefix']);
+        $item = \App\Util\GithubPluginRegistry::find($key, $type);
+        if ($item === null) {
+            throw new JSONException("在 GitHub 插件仓库中未找到 {$key} (type={$type})");
         }
 
-        if ($type == 0) {
-            //安装
+        if (!is_dir($pluginPath) && !@mkdir($pluginPath, 0777, true) && !is_dir($pluginPath)) {
+            throw new JSONException("无法创建插件目录");
+        }
+
+        try {
+            \App\Util\GithubPluginDownloader::download($item, $pluginPath);
+        } catch (\Throwable $e) {
+            File::delDirectory($pluginPath);
+            throw new JSONException("插件文件拉取失败：" . $e->getMessage());
+        }
+
+        if (!is_file($entryFile)) {
+            File::delDirectory($pluginPath);
+            throw new JSONException("插件目录下载后未找到入口配置文件，仓库结构可能有误");
+        }
+
+        // install.sql
+        $installSql = $pluginPath . "install.sql";
+        if (is_file($installSql)) {
+            $database = (array)config("database");
+            SQL::import(
+                $installSql,
+                (string)$database['host'],
+                (string)$database['database'],
+                (string)$database['username'],
+                (string)$database['password'],
+                (string)$database['prefix']
+            );
+        }
+
+        if ($type === 0) {
             Plugin::runHookState($key, \Kernel\Annotation\Plugin::INSTALL);
         }
+
+        Permission::makeTreeWritable($pluginPath);
     }
 
     /**
-     * @param string $key
-     * @param int $type
-     * @param int $pluginId
-     * @throws GuzzleException
+     * 从 GitHub 插件仓库更新一个已装插件。
+     *
      * @throws JSONException
      * @throws \ReflectionException
      */
     public function updatePlugin(string $key, int $type, int $pluginId): void
     {
-        //默认位置，通用插件
-        $pluginPath = BASE_PATH . "/app/Plugin/{$key}/";
-        if ($type == 1) {
-            //支付插件
-            $pluginPath = BASE_PATH . "/app/Pay/{$key}/";
-        } elseif ($type == 2) {
-            //网站模板
-            $pluginPath = BASE_PATH . "/app/View/User/Theme/{$key}/";
-        }
+        $pluginPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$key}/",
+            2 => BASE_PATH . "/app/View/User/Theme/{$key}/",
+            default => BASE_PATH . "/app/Plugin/{$key}/",
+        };
         if (!is_dir($pluginPath)) {
             throw new JSONException("该插件还未安装，请先安装插件后再进行更新");
         }
-        $storeDownload = $this->storeDownload("/store/update", [
-            "plugin_id" => $pluginId
-        ]);
-        if (!$storeDownload) {
-            throw new JSONException("更新失败，请联系技术人员");
-        }
-        //下载完成，开始安装
-        $src = BASE_PATH . "/kernel/Install/OS/{$storeDownload}";
-        if (!Zip::unzip($src, $pluginPath)) {
-            throw new JSONException("更新失败，请检查是否有写入权限");
-        }
-        //更新完成，删除src
-        unlink($src);
-        //判断目标目录是否有update.sql
-        $updateSql = $pluginPath . "update.sql";
-        if (file_exists($updateSql)) {
-            $database = config("database");
-            SQL::import($updateSql, $database['host'], $database['database'], $database['username'], $database['password'], $database['prefix']);
+
+        $item = \App\Util\GithubPluginRegistry::find($key, $type);
+        if ($item === null) {
+            throw new JSONException("在 GitHub 插件仓库中未找到 {$key} (type={$type})");
         }
 
-        if ($type == 0) {
+        try {
+            \App\Util\GithubPluginDownloader::download($item, $pluginPath);
+        } catch (\Throwable $e) {
+            throw new JSONException("插件文件拉取失败：" . $e->getMessage());
+        }
+
+        // update.sql
+        $updateSql = $pluginPath . "update.sql";
+        if (is_file($updateSql)) {
+            $database = (array)config("database");
+            SQL::import(
+                $updateSql,
+                (string)$database['host'],
+                (string)$database['database'],
+                (string)$database['username'],
+                (string)$database['password'],
+                (string)$database['prefix']
+            );
+        }
+
+        if ($type === 0) {
             Plugin::runHookState($key, \Kernel\Annotation\Plugin::UPGRADE);
-        } elseif ($type == 2) {
-            //清空模版缓存
+        } elseif ($type === 2) {
+            // 清空模版缓存
             $viewDir = realpath(BASE_PATH . "/runtime/view/");
             if ($viewDir) {
                 File::delDirectory($viewDir);
             }
         }
 
-        $files = [BASE_PATH . '/runtime/plugin/store.cache', BASE_PATH . '/runtime/plugin/update.cache'];
-        foreach ($files as $file) {
-            if (is_file($file)) {
-                unlink($file);
+        foreach ([BASE_PATH . '/runtime/plugin/store.cache', BASE_PATH . '/runtime/plugin/update.cache', BASE_PATH . '/runtime/plugin/registry.cache'] as $f) {
+            if (is_file($f)) {
+                @unlink($f);
             }
         }
+
+        Permission::makeTreeWritable($pluginPath);
     }
 
     /**
@@ -283,99 +178,31 @@ class App implements \App\Service\App
     }
 
     /**
-     * @throws GuzzleException
      * @throws JSONException
      */
     public function purchaseRecords(int $pluginId): array
     {
-        return $this->storeRequest("/store/records", [
-            "plugin_id" => $pluginId
-        ]);
+        // 插件全部免费、无购买记录
+        return [];
     }
 
     /**
-     * @throws GuzzleException
      * @throws JSONException
      */
     public function unbind(int $authId): array
     {
-        return $this->storeRequest("/store/unbind", [
-            "auth_id" => $authId
-        ]);
+        throw new JSONException("应用商店账号体系已停用");
     }
 
     /**
-     * @throws GuzzleException
+     * 旧异次元商店升级路径已废弃。主程序升级请使用 updateFromZip()，
+     * 由 Controller 的 githubUpdate / localUpdate 调用。
+     *
      * @throws JSONException
      */
     public function update(): void
     {
-        $versions = $this->getVersions();
-        $latestVersion = $versions[0]['version'];
-        $localVersion = config("app")['version'];
-        if ($latestVersion == $localVersion) {
-            throw new JSONException("你已经是最新版本了");
-        }
-
-        $vrs = array_reverse($versions);
-        $startVersion = 0;
-
-        foreach ($vrs as $index => $vr) {
-            if ($vr['version'] == $localVersion) {
-                $startVersion = $index;
-                break;
-            }
-        }
-
-        foreach ($vrs as $key => $val) {
-            if ($startVersion < $key) {
-                //下载完成，写入到本地缓存目录
-                $zipPath = BASE_PATH . '/kernel/Install/Update/' . $val['version'];
-
-                //下载更新包
-                if (!Http::download($val['update_url'], $zipPath . '/update.zip')) {
-                    throw new JSONException("更新包下载失败");
-                }
-
-                if (!Zip::unzip($zipPath . '/update.zip', $zipPath)) {
-                    throw new JSONException("ZIP解压缩失败，请检查程序是否有写入权限！");
-                }
-
-                //升级数据库
-                $sql = $zipPath . '/update.sql';
-
-                if (file_exists($sql)) {
-                    //导入数据库
-                    $database = config("database");
-                    SQL::import($sql, $database['host'], $database['database'], $database['username'], $database['password'], $database['prefix']);
-                }
-
-                //升级程序，防止sql等命令错误，通过php代码来执行sql，新增时间：2022/04/07
-                $ext = $zipPath . '/update.php';
-                if (file_exists($ext)) {
-                    require($ext);
-                    $class = "\\Version" . str_replace(".", "", $val['version']) . "\\Update";
-                    if (!class_exists($class)) {
-                        throw new JSONException("更新主类未装载成功，请重试");
-                    }
-                    $updateObj = new $class();
-                    if (!method_exists($updateObj, "handle")) {
-                        throw new JSONException("更新子程序不存在，请重试");
-                    }
-                    $updateObj->handle();
-                }
-
-                //升级程序
-                try {
-                    File::copyDirectory($zipPath . '/file', BASE_PATH);
-                } catch (\Exception $e) {
-                    throw new JSONException($e->getMessage());
-                }
-
-                //升级完成，记录版本号
-                setConfig(["version" => $val["version"]], BASE_PATH . "/config/app.php");
-            }
-        }
+        throw new JSONException("此入口已废弃，请使用 GitHub 升级流程（侧栏点版本号）");
     }
 
     /**
@@ -461,6 +288,9 @@ class App implements \App\Service\App
             }
         }
         Opcache::reset();
+
+        // 升级结束后自动给可写目录批量授权
+        Permission::grantWritableDirs();
 
         // 清理工作目录与原 zip
         File::delDirectory($work);
@@ -663,7 +493,7 @@ class App implements \App\Service\App
      */
     public function install(): void
     {
-        $this->post("/open/project/install", ["key" => "faka"]);
+        // 已脱离异次元应用商店：不再上报"新站点已安装"事件
     }
 
     /**
@@ -673,29 +503,15 @@ class App implements \App\Service\App
      */
     public function captcha(string $type): array
     {
-        $cookie = [];
-        $result = (array)$this->post("/auth/captcha", [
-            "type" => $type
-        ], $cookie);
-        $result["cookie"] = $cookie;
-        return $result;
+        throw new JSONException("应用商店账号体系已停用");
     }
 
     /**
-     * @param string $username
-     * @param string $password
-     * @param string $captcha
-     * @param array $cookie
-     * @return array
      * @throws JSONException
      */
     public function register(string $username, string $password, string $captcha, array $cookie): array
     {
-        return (array)$this->post("/auth/register", [
-            "captcha" => $captcha,
-            "username" => $username,
-            "password" => $password
-        ], $cookie);
+        throw new JSONException("应用商店账号体系已停用");
     }
 
     /**
@@ -703,165 +519,85 @@ class App implements \App\Service\App
      */
     public function login(string $username, string $password): array
     {
-        return (array)$this->post("/auth/login", [
-            "username" => $username,
-            "password" => $password
-        ]);
+        throw new JSONException("应用商店账号体系已停用");
     }
 
     /**
-     * @throws GuzzleException
-     * @throws JSONException
+     * 旧接口：Controller 的 plugins() 已直接走 GithubPluginRegistry，本方法不再被调用。
+     * 保留签名返回空，避免任何漏网调用炸到。
      */
     public function plugins(array $data): array
     {
-        return $this->storeRequest("/store/plugins", $data);
+        return ["rows" => [], "count" => 0, "user" => ["id" => 0, "username" => "", "level" => 0], "purchase" => []];
     }
 
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerPlugins(array $data): array
     {
-        return $this->storeRequest("/developer/plugins", $data);
+        return ["rows" => [], "count" => 0, "user" => ["id" => 0, "username" => "", "level" => 0]];
     }
 
-
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerCreatePlugin(array $data): array
     {
-        return $this->storeRequest("/developer/create", $data);
+        throw new JSONException("已脱离应用商店，请通过 GitHub 仓库提交 PR 来发布插件");
     }
 
     /**
-     * @throws GuzzleException
      * @throws JSONException
      */
     public function purchase(int $type, int $pluginId, int $payType): array
     {
-        return $this->storeRequest("/store/purchase", [
-            "type" => $type,
-            "payType" => $payType,
-            "plugin_id" => $pluginId,
-            "return" => \App\Util\Client::getUrl() . "/admin/store/home"
-        ]);
+        throw new JSONException("插件全部免费，无需购买");
     }
 
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerCreateKit(array $data): array
     {
-        return $this->storeRequest("/developer/createKit", $data);
+        throw new JSONException("已脱离应用商店，请通过 GitHub 仓库提交 PR");
     }
 
-
-    /**
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerDeletePlugin(array $data): array
     {
-        return $this->storeRequest("/developer/deletePlugin", $data);
+        throw new JSONException("已脱离应用商店");
     }
 
     /**
-     * @param array $data
-     * @return array
-     * @throws JSONException
+     * 上传文件（原走异次元商店）已停用，返回空 path 以兼容调用方。
      */
     public function upload(array $data): array
     {
-        try {
-            $form = [
-                "multipart" => $data,
-                "verify" => false
-            ];
-            $response = $this->client->post(self::APP_URL . "/open/project/upload", $form);
-            $res = (array)json_decode((string)$response->getBody()->getContents(), true);
-        } catch (GuzzleException $e) {
-            throw new JSONException("应用商店连接失败");
-        }
-        if ($res['code'] != 200) {
-            throw new JSONException($res['msg']);
-        }
-        return $res['data'];
+        throw new JSONException("应用商店上传通道已停用，请改用本地 zip 安装");
     }
 
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerUpdatePlugin(array $data): array
     {
-        return $this->storeRequest("/developer/createUpdate", $data);
+        throw new JSONException("已脱离应用商店，请通过 GitHub 仓库提交 PR");
     }
 
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function developerPluginPriceSet(array $data): array
     {
-        return $this->storeRequest("/developer/priceSet", $data);
+        throw new JSONException("已脱离应用商店，插件全部免费");
     }
 
     /**
-     * @param int $authId
-     * @return array
-     * @throws GuzzleException
      * @throws JSONException
      */
     public function bindLevel(int $authId): array
     {
-        return $this->storeRequest("/store/bindLevel", ["auth_id" => $authId]);
+        throw new JSONException("应用商店账号体系已停用");
     }
 
-
-    /**
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function levels(): array
     {
-        return $this->storeRequest("/store/levels");
+        return [];
     }
 
-    /**
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function service(): array
     {
-        return $this->storeRequest("/store/service");
+        // 旧前端会读 service() 拿"商店用户信息"渲染头像/等级；返回空让其优雅退化
+        return ["id" => 0, "username" => "", "level" => 0, "developer" => 0, "balance" => 0];
     }
 
-
-    /**
-     * @param array $data
-     * @return array
-     * @throws GuzzleException
-     * @throws JSONException
-     */
     public function editPassword(array $data): array
     {
-        return $this->storeRequest("/store/editPassword", $data);
+        throw new JSONException("应用商店账号体系已停用");
     }
 }

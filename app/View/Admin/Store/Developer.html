@@ -9,29 +9,98 @@
     <div class="post d-flex flex-column-fluid" id="kt_post">
         <!--begin::Container-->
         <div id="kt_content_container" class="container-fluid">
-            <!--begin::Tables Widget 9-->
             <div class="card mb-5 mb-xl-8">
-                <!--begin::Header-->
-                <div class="card-header border-0">
-                    <div class="card-toolbar">
-                        <button class="btn btn-sm btn-light-primary me-3 developerCreatePlugin"><i class="fa-duotone fa-regular fa-layer-plus"></i> 创建插件
-                        </button>
+                <div class="card-body py-5">
+                    <div class="d-flex align-items-start mb-4" style="gap:14px;">
+                        <i class="fa-duotone fa-regular fa-code-branch text-primary" style="font-size:36px;"></i>
+                        <div style="flex:1;">
+                            <h2 style="font-weight:600;margin-bottom:6px;">通过 GitHub PR 投稿插件</h2>
+                            <div class="text-muted" style="font-size:14px;">
+                                插件、支付接口、模板全部托管在公开仓库
+                                <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins" target="_blank" class="text-primary">
+                                    NoDoorAction/Acg-Faka-Plugins
+                                </a>，
+                                想发布新插件只需提交一个 Pull Request — 仓库管理员审核合并后，所有用户的"应用商店"页就会立刻看到。
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-4 mb-4">
+                        <div class="col-md-4">
+                            <div class="card border h-100" style="background:#f9faff;">
+                                <div class="card-body">
+                                    <div class="mb-2">
+                                        <i class="fa-duotone fa-regular fa-1 text-primary" style="font-size:22px;"></i>
+                                    </div>
+                                    <h5>Fork 仓库</h5>
+                                    <div class="text-muted" style="font-size:13px;">
+                                        在 GitHub 上 fork
+                                        <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins" target="_blank">NoDoorAction/Acg-Faka-Plugins</a>
+                                        到你的账号下，clone 到本地。
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card border h-100" style="background:#f9faff;">
+                                <div class="card-body">
+                                    <div class="mb-2">
+                                        <i class="fa-duotone fa-regular fa-2 text-primary" style="font-size:22px;"></i>
+                                    </div>
+                                    <h5>添加插件目录</h5>
+                                    <div class="text-muted" style="font-size:13px;">
+                                        在 <code>plugins/</code>、<code>pays/</code> 或 <code>themes/</code> 下新建一个目录，
+                                        放进 <code>Config/Info.php</code>、入口文件、可选的 <code>icon.png</code> /
+                                        <code>install.sql</code> / <code>README.md</code>。
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="card border h-100" style="background:#f9faff;">
+                                <div class="card-body">
+                                    <div class="mb-2">
+                                        <i class="fa-duotone fa-regular fa-3 text-primary" style="font-size:22px;"></i>
+                                    </div>
+                                    <h5>更新索引 + 提 PR</h5>
+                                    <div class="text-muted" style="font-size:13px;">
+                                        运行
+                                        <code>node scripts/gen-index.js</code>
+                                        重生成 <code>plugins.json</code>，然后 commit + push + 提 PR。
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="alert alert-warning d-flex align-items-start" style="background:#fffaf0;gap:10px;">
+                        <i class="fa-duotone fa-regular fa-shield-check text-warning" style="font-size:18px;margin-top:2px;"></i>
+                        <div style="font-size:13px;">
+                            <b>安全提示：</b>插件代码会运行在用户服务器上，仓库管理员合并 PR 前会进行人工审核。
+                            如果你只是想在自己服务器上跑一个临时插件，<b>不需要发 PR</b> —— 在"应用商店"页点"本地 zip 安装"，
+                            上传打包好的 zip 即可。
+                        </div>
+                    </div>
+
+                    <div class="d-flex justify-content-center mt-4" style="gap:12px;">
+                        <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins" target="_blank"
+                           class="btn btn-primary"><i class="fa-duotone fa-regular fa-arrow-up-right-from-square"></i>
+                            打开插件仓库
+                        </a>
+                        <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins/blob/main/README.md" target="_blank"
+                           class="btn btn-light-primary"><i class="fa-duotone fa-regular fa-book"></i>
+                            查看投稿规范
+                        </a>
+                        <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins/compare" target="_blank"
+                           class="btn btn-light-success"><i class="fa-duotone fa-regular fa-code-pull-request"></i>
+                            发起 Pull Request
+                        </a>
                     </div>
                 </div>
-                <!--end::Header-->
-
-                <div class="card-body py-3">
-                    <table id="dev-plugin-table"></table>
-                </div>
             </div>
-
-            <!--end::Tables Widget 9-->
         </div>
-        <!--end::Container-->
     </div>
-    <!--end::Post-->
 </div>
 <!--end::Content-->
 
-#{ready("/assets/admin/controller/store/developer.js")}
 #{include file="../Footer.html"}

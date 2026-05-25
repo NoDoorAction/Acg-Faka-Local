@@ -8,6 +8,7 @@ use App\Controller\Base\API\User;
 use App\Service\App;
 use App\Util\Client;
 use App\Util\Opcache;
+use App\Util\Permission;
 use App\Util\Str;
 use App\Util\Validation;
 use Kernel\Annotation\Inject;
@@ -130,6 +131,9 @@ class Install extends User
 
         unlink($sqlFile . ".tmp");
         file_put_contents(BASE_PATH . '/kernel/Install/Lock', "");
+
+        // 安装结束后给可写目录批量授权，避免日后插件装/卸、上传、升级时再被权限问题卡住
+        Permission::grantWritableDirs();
 
         try {
             $this->app->install();

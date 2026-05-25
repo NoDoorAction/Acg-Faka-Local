@@ -143,8 +143,18 @@ PHP;
 
         $content = sprintf($content, var_export($config, true));
 
-        if (file_put_contents($file, $content, LOCK_EX) === false) {
-            throw new \Kernel\Exception\JSONException('没有文件写入权限');
+        // 写之前先尝试把目标文件/父目录调到可写
+        \App\Util\Permission::ensureFileWritable($file);
+
+        if (@file_put_contents($file, $content, LOCK_EX) === false) {
+            // 第一次失败，最后挣扎一下：再 chmod 一次然后重试
+            @chmod($file, \App\Util\Permission::FILE_MODE);
+            @chmod(dirname($file), \App\Util\Permission::DIR_MODE);
+            if (@file_put_contents($file, $content, LOCK_EX) === false) {
+                throw new \Kernel\Exception\JSONException(
+                    "没有文件写入权限\n" . \App\Util\Permission::diagnose($file)
+                );
+            }
         }
 
         Opcache::invalidate($file);
@@ -287,6 +297,21 @@ if (!function_exists("Plugin")) {
 }
 
 
+if (!function_exists("_asset_cache_bust")) {
+    /**
+     * 为一个静态资源 URL 追加缓存破坏器：本地能找到就用文件 mtime，否则回落到 APP_VERSION。
+     * 这样仅当文件真的被改动时，对应资源 URL 才变化，不需要每次升级整站版本号。
+     */
+    function _asset_cache_bust(string $item, string $debugRandom): string
+    {
+        $path = parse_url($item, PHP_URL_PATH);
+        $local = BASE_PATH . '/' . ltrim((string)($path ?: $item), '/');
+        $mtime = @filemtime($local);
+        $bust = $mtime ? (string)$mtime : APP_VERSION;
+        return $item . (str_contains($item, "?") ? "&" : "?") . 'v=' . $bust . $debugRandom;
+    }
+}
+
 if (!function_exists("css")) {
     function css(array|string $resource, array|string|null $backup = null, bool $cdn = true): string
     {
@@ -298,10 +323,10 @@ if (!function_exists("css")) {
         $cdnSupport = $cdn ? 'class="cdn-support"' : '';
         if (is_array($resource)) {
             foreach ($resource as $item) {
-                $res .= sprintf('<link rel="stylesheet" href="%s" ' . $cdnSupport . '>', $item . '?v=' . APP_VERSION . $debugRandom);
+                $res .= sprintf('<link rel="stylesheet" href="%s" ' . $cdnSupport . '>', _asset_cache_bust($item, $debugRandom));
             }
         } else {
-            $res = sprintf('<link rel="stylesheet" href="%s" ' . $cdnSupport . '>', $resource . '?v=' . APP_VERSION . $debugRandom);
+            $res = sprintf('<link rel="stylesheet" href="%s" ' . $cdnSupport . '>', _asset_cache_bust($resource, $debugRandom));
         }
         return $res;
     }
@@ -318,10 +343,10 @@ if (!function_exists("js")) {
         $cdnSupport = $cdn ? ' class="cdn-support"' : '';
         if (is_array($resource)) {
             foreach ($resource as $item) {
-                $res .= sprintf('<script src="%s" ' . $cdnSupport . '></script>', $item . (str_contains($item, "?") ? "&" : "?") . 'v=' . APP_VERSION . $debugRandom);
+                $res .= sprintf('<script src="%s" ' . $cdnSupport . '></script>', _asset_cache_bust($item, $debugRandom));
             }
         } else {
-            $res = sprintf('<script src="%s" ' . $cdnSupport . '></script>', $resource . (str_contains($resource, "?") ? "&" : "?") . 'v=' . APP_VERSION . $debugRandom);
+            $res = sprintf('<script src="%s" ' . $cdnSupport . '></script>', _asset_cache_bust($resource, $debugRandom));
         }
         return $res;
     }

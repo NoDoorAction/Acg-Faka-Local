@@ -350,24 +350,13 @@
                                         <div class="menu-item me-lg-1 app-store app-store-main">
                                             <a class="a-badge a-badge-success" href="/admin/store/home"><i
                                                         class="fa-duotone fa-regular fa-splotch"></i> 应用商店</a>
-                                            <select class="app-server-select">
-                                                <option value="0" #{if $app.server == 0} selected #{/if}>节点:腾讯云
-                                                </option>
-                                                <option value="3" #{if $app.server == 3} selected #{/if}>节点:阿里云
-                                                </option>
-                                                <option value="1" #{if $app.server == 1} selected #{/if}>节点:抖音
-                                                </option>
-                                                <option value="2" #{if $app.server == 2} selected #{/if}>节点:海外专线
-                                                </option>
-                                            </select>
-
-                                            <div class="store-text"></div>
+                                            <a class="a-badge a-badge-light ms-1" href="https://github.com/NoDoorAction/Acg-Faka-Plugins" target="_blank" title="插件仓库（GitHub）"><i class="fa-duotone fa-regular fa-code-branch"></i> 插件仓库</a>
                                         </div>
                                     </div>
                                 #{else}
                                     <div class="menu me-4 menu-lg-rounded menu-column menu-lg-row menu-state-bg menu-title-gray-700 menu-state-title-primary menu-state-icon-primary menu-state-bullet-primary menu-arrow-gray-400 fw-bold my-5 my-lg-0 align-items-stretch">
                                         <div class="menu-item me-lg-1 app-store"><a class="py-3 text-danger fw-bold"
-                                                                                    href="javascript:layer.msg('您已离线，无法再使用应用商店。');"><i
+                                                                                    href="javascript:layer.msg('插件运行时未初始化，无法访问应用商店。');"><i
                                                         class="fas fa-plug text-danger"></i> 离线版
                                             </a></div>
                                     </div>

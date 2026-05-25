@@ -72,23 +72,36 @@ class File
     }
 
     /**
-     * 删除目录
+     * 删除目录。删除前先尝试把整棵树调到可写，避免 read-only 文件阻塞 rm。
      * @param string $path
      */
     public static function delDirectory(string $path): void
     {
+        if (!is_dir($path)) {
+            return;
+        }
+        // 提前把整棵树调到可写（owner 正确时才生效；owner 错位时静默失败）
+        Permission::makeTreeWritable($path);
+
         if ($handle = opendir($path)) {
             while (false !== ($item = readdir($handle))) {
                 if ($item != "." && $item != "..") {
-                    if (is_dir("{$path}/{$item}")) {
-                        self::delDirectory("{$path}/{$item}");
+                    $child = $path . DIRECTORY_SEPARATOR . $item;
+                    if (is_dir($child) && !is_link($child)) {
+                        self::delDirectory($child);
                     } else {
-                        unlink("{$path}/{$item}");
+                        if (!@unlink($child)) {
+                            @chmod($child, Permission::FILE_MODE);
+                            @unlink($child);
+                        }
                     }
                 }
             }
             closedir($handle);
-            rmdir($path);
+            if (!@rmdir($path)) {
+                @chmod($path, Permission::DIR_MODE);
+                @rmdir($path);
+            }
         }
     }
 

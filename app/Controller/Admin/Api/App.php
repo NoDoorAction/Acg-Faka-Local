@@ -7,6 +7,8 @@ use App\Interceptor\ManageSession;
 use App\Interceptor\Waf;
 use App\Model\ManageLog;
 use App\Util\Github;
+use App\Util\GithubPluginDownloader;
+use App\Util\GithubPluginRegistry;
 use App\Util\Http;
 use App\Util\Opcache;
 use App\Util\PayConfig;
@@ -251,144 +253,193 @@ class App extends Manage
     }
 
     /**
-     * @return array
+     * 应用商店插件列表（GitHub 数据源）。返回结构与原异次元商店接口同构，
+     * 前端 home.js 表格直接复用，无需改字段。
      */
     public function plugins(): array
     {
-        $owner = -1;
-        if (isset($_POST['equal-owner'])) {
-            $owner = (int)$_POST['equal-owner'];
+        $type = isset($_POST['group']) ? (int)$_POST['group'] : -1;
+        $keywords = trim((string)($_POST['keywords'] ?? ''));
+        if ($keywords !== '') {
+            $keywords = urldecode($keywords);
         }
-        $keywords = (string)$_POST['keywords'];
+        $page = max(1, (int)($_POST['page'] ?? 1));
+        $limit = max(1, (int)($_POST['limit'] ?? 50));
 
-        $data = [
-            "owner" => $owner,
-            "page" => (int)$_POST['page'],
-            "limit" => (int)$_POST['limit'],
-            "group" => (int)$_POST['group']
-        ];
+        $registry = GithubPluginRegistry::fetch();
+        $rows = [];
+        $index = 0;
+        foreach ($registry['items'] as $item) {
+            if (!is_array($item)) continue;
+            $itemType = (int)($item['type'] ?? 0);
+            if ($type !== -1 && $itemType !== $type) continue;
 
-        if ($keywords) {
-            $data['keywords'] = urldecode($keywords);
-        }
-
-        $plugins = $this->app->plugins($data);
-
-        //判断自己是否安装
-        $fileInit = false;
-        foreach ($plugins['rows'] as $index => $plugin) {
-            if ($plugin['type'] == 0) {
-                $installPath = BASE_PATH . "/app/Plugin/{$plugin['plugin_key']}";
-                $fileInit = file_exists($installPath . "/Config/Info.php");
-                if (is_dir($installPath) && $fileInit) {
-                    $config = require($installPath . "/Config/Info.php");
-                    $plugins['rows'][$index]['local_version'] = $config[\App\Consts\Plugin::VERSION];
-                }
-            } else if ($plugin['type'] == 1) {
-                $installPath = BASE_PATH . "/app/Pay/{$plugin['plugin_key']}";
-                $fileInit = file_exists($installPath . "/Config/Info.php");
-                if (is_dir($installPath) && $fileInit) {
-                    $config = require($installPath . "/Config/Info.php");
-                    $plugins['rows'][$index]['local_version'] = $config["version"];
-                }
-            } elseif ($plugin['type'] == 2) {
-                $installPath = BASE_PATH . "/app/View/User/Theme/{$plugin['plugin_key']}";
-                $fileInit = file_exists($installPath . "/Config.php");
-                if (is_dir($installPath) && $fileInit) {
-                    $config = require($installPath . "/Config.php");
-                    $namespace = "App\\View\\User\\Theme\\{$plugin['plugin_key']}\\Config";
-                    $plugins['rows'][$index]['local_version'] = $namespace::INFO["VERSION"];
-                }
-            } else {
+            $name = (string)($item['name'] ?? '');
+            $desc = (string)($item['description'] ?? '');
+            if ($keywords !== '' && !str_contains($name, $keywords) && !str_contains($desc, $keywords)) {
                 continue;
             }
-            if (is_dir($installPath) && $fileInit) {
-                $plugins['rows'][$index]['install'] = 1;
-            } else {
-                $plugins['rows'][$index]['install'] = 0;
-            }
 
-            $plugins['rows'][$index]['icon'] = \App\Service\App::APP_URL . "/{$plugins['rows'][$index]['icon']}";
+            $row = self::enrichPluginRow($item, $index++);
+            $rows[] = $row;
         }
 
-        $json = $this->json(data: [
-            "list" => $plugins['rows'],
-            "total" => $plugins['count']
-        ]);
+        $total = count($rows);
+        $rows = array_slice($rows, ($page - 1) * $limit, $limit);
 
-        $json['user'] = $plugins['user'];
-        $json['purchase'] = $plugins['purchase'];
+        $json = $this->json(data: ["list" => $rows, "total" => $total]);
+        // 兼容旧前端字段：user / purchase 留空即可
+        $json['user'] = ["id" => 0, "username" => "", "level" => 0];
+        $json['purchase'] = [];
         return $json;
     }
 
     /**
+     * 把 plugins.json item 转换成前端表格需要的 row 结构（含 install / local_version / icon 绝对 URL）。
+     *
+     * @param array<string, mixed> $item
+     * @return array<string, mixed>
+     */
+    private static function enrichPluginRow(array $item, int $idx): array
+    {
+        $type = (int)($item['type'] ?? 0);
+        $key = (string)($item['key'] ?? '');
+        $row = [
+            "id" => $idx + 1,
+            "plugin_key" => $key,
+            "plugin_name" => (string)($item['name'] ?? $key),
+            "version" => (string)($item['version'] ?? '1.0.0'),
+            "update_content" => (string)($item['description'] ?? ''),
+            "type" => $type,
+            "author" => (string)($item['author'] ?? ''),
+            "description" => (string)($item['description'] ?? ''),
+            "homepage" => (string)($item['homepage'] ?? ''),
+            "price" => 0,
+            "free" => 1,
+            "icon" => "",
+        ];
+
+        // icon: 仓库内相对路径转为 raw.githubusercontent.com 的绝对 URL
+        $iconRel = (string)($item['icon'] ?? '');
+        if ($iconRel !== '') {
+            try {
+                $r = GithubPluginRegistry::repo();
+                $row['icon'] = "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$r['branch']}/" . ltrim($iconRel, '/');
+            } catch (\Throwable $e) {
+                // 配置缺失时忽略 icon
+            }
+        }
+
+        // 本地是否已安装、本地版本
+        $installPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$key}",
+            2 => BASE_PATH . "/app/View/User/Theme/{$key}",
+            default => BASE_PATH . "/app/Plugin/{$key}",
+        };
+        $entryFile = $type === 2 ? "{$installPath}/Config.php" : "{$installPath}/Config/Info.php";
+
+        if (is_file($entryFile)) {
+            $row['install'] = 1;
+            try {
+                if ($type === 2) {
+                    $namespace = "App\\View\\User\\Theme\\{$key}\\Config";
+                    if (class_exists($namespace)) {
+                        $row['local_version'] = $namespace::INFO["VERSION"] ?? '';
+                    }
+                } else {
+                    $config = require($entryFile);
+                    $row['local_version'] = $type === 1
+                        ? ($config['version'] ?? '')
+                        : ($config[\App\Consts\Plugin::VERSION] ?? '');
+                }
+            } catch (\Throwable $e) {
+                $row['local_version'] = '';
+            }
+        } else {
+            $row['install'] = 0;
+            $row['local_version'] = '';
+        }
+
+        return $row;
+    }
+
+    /**
+     * 主动清掉插件 registry 缓存，下次拉列表会重新打 plugins.json。
+     */
+    public function refreshPluginIndex(): array
+    {
+        GithubPluginRegistry::clearCache();
+        return $this->json(200, "已刷新");
+    }
+
+    /**
      * @return array
+     */
+    /**
+     * 检查本地已装插件 vs GitHub 仓库版本，统计可升级数量。
+     * 用 plugins.json 作为对照数据源，避免重新拉一次详细列表。
      */
     public function getUpdates(): array
     {
         $file = BASE_PATH . "/runtime/plugin/store.cache";
         $update = BASE_PATH . "/runtime/plugin/update.cache";
 
-        $filectime = filectime($file);
-
-        if ($filectime + 120 > time()) {
+        if (is_file($file) && is_file($update) && (filectime($file) + 120) > time()) {
             $updateData = (array)json_decode((string)file_get_contents($update), true) ?: [];
-            return array_merge($this->json(200, "ok"), $updateData);
+            $appStore = (array)json_decode((string)file_get_contents($file), true) ?: [];
+            return array_merge($this->json(200, "ok", $appStore), $updateData);
         }
 
-        $plugins = $this->app->plugins([
-            "type" => -1,
-            "page" => 1,
-            "limit" => 1000,
-            "group" => 0,
-        ]);
+        try {
+            $registry = GithubPluginRegistry::fetch();
+        } catch (\Throwable $e) {
+            return array_merge($this->json(200, "ok", []), ['generalPlugin' => 0, 'payPlugin' => 0, 'themePlugin' => 0]);
+        }
 
-        //appStroe缓存
-        $appStore = (array)json_decode((string)file_get_contents($file), true) ?: [];
-
+        $appStore = [];
         $generalPlugin = 0;
         $themePlugin = 0;
         $payPlugin = 0;
 
-        foreach ($plugins['rows'] as $plugin) {
-            $appStore[$plugin['plugin_key']] = [
-                "icon" => $plugin['icon'],
-                "name" => $plugin['plugin_name'],
-                "version" => $plugin['version'],
-                "update_content" => $plugin['update_content'],
-                "id" => $plugin['id'],
-                "type" => $plugin['type']  // 0 = 通用插件，2 = 模版 , 1 = 支付插件
+        foreach ($registry['items'] as $item) {
+            if (!is_array($item)) continue;
+            $key = (string)($item['key'] ?? '');
+            $type = (int)($item['type'] ?? 0);
+            $remoteVersion = (string)($item['version'] ?? '');
+
+            $appStore[$key] = [
+                "icon" => $item['icon'] ?? '',
+                "name" => $item['name'] ?? $key,
+                "version" => $remoteVersion,
+                "update_content" => $item['description'] ?? '',
+                "id" => 0,
+                "type" => $type,
             ];
 
-            switch ($plugin['type']) {
+            switch ($type) {
                 case 0:
-                    $plg = \Kernel\Util\Plugin::getPlugin($plugin['plugin_key']);
-                    if (!empty($plg)) {
-                        if ($plg['VERSION'] !== $plugin['version']) {
-                            $generalPlugin++;
-                        }
+                    $plg = \Kernel\Util\Plugin::getPlugin($key);
+                    if (!empty($plg) && ($plg['VERSION'] ?? '') !== $remoteVersion) {
+                        $generalPlugin++;
                     }
                     break;
                 case 1:
-                    $plg = PayConfig::info($plugin['plugin_key']);
-                    if (!empty($plg)) {
-                        if ($plg['version'] !== $plugin['version']) {
-                            $payPlugin++;
-                        }
+                    $plg = PayConfig::info($key);
+                    if (!empty($plg) && ($plg['version'] ?? '') !== $remoteVersion) {
+                        $payPlugin++;
                     }
                     break;
                 case 2:
-                    $plg = Theme::getConfig($plugin['plugin_key']);
-                    if (!empty($plg)) {
-                        if ($plg['info']['VERSION'] !== $plugin['version']) {
-                            $themePlugin++;
-                        }
+                    $plg = Theme::getConfig($key);
+                    if (!empty($plg) && (($plg['info']['VERSION'] ?? '') !== $remoteVersion)) {
+                        $themePlugin++;
                     }
                     break;
             }
         }
 
         $updateData = ['generalPlugin' => $generalPlugin, 'payPlugin' => $payPlugin, 'themePlugin' => $themePlugin];
+        @mkdir(dirname($file), 0777, true);
         file_put_contents($file, json_encode($appStore));
         file_put_contents($update, json_encode($updateData));
         return array_merge($this->json(200, "ok", $appStore), $updateData);

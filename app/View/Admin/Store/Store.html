@@ -12,17 +12,28 @@
             <!--begin::Tables Widget 9-->
             <div class="card mb-5 mb-xl-8">
                 <!--begin::Header-->
-                <div class="card-header border-0 store-toolbar" style="display: none;">
+                <div class="card-header border-0">
                     <div class="card-toolbar">
-                        <button class="btn btn-sm btn-light-danger me-3 update-pro" style="display: none;"><i class="fa-duotone fa-regular fa-circle-yen"></i>开通企业版(免费使用所有插件/获得技术支持)
+                        <button class="btn btn-sm btn-light-primary me-3 btn-local-install"><i
+                                    class="fa-duotone fa-regular fa-folder-arrow-up"></i> 本地 zip 安装
                         </button>
-                        <button class="btn btn-sm btn-light-primary me-3 bind-pro" style="display: none;"><i class="fa-duotone fa-regular fa-lock-hashtag"></i> 绑定专业版/企业版
+                        <button class="btn btn-sm btn-light-info me-3 btn-refresh-index"><i
+                                    class="fa-duotone fa-regular fa-arrows-rotate"></i> 刷新插件索引
                         </button>
+                        <a href="/admin/store/developer" class="btn btn-sm btn-light-success me-3"><i
+                                    class="fa-duotone fa-regular fa-code-branch"></i> 通过 PR 投稿插件
+                        </a>
                     </div>
                 </div>
                 <!--end::Header-->
 
                 <div class="card-body py-3">
+                    <div class="alert alert-light border mb-4" style="background:#f8f9ff;font-size:13px;">
+                        <i class="fa-duotone fa-regular fa-cloud text-primary"></i>
+                        插件列表来源于 GitHub 仓库
+                        <a href="https://github.com/NoDoorAction/Acg-Faka-Plugins" target="_blank" class="text-primary">NoDoorAction/Acg-Faka-Plugins</a>
+                        的 <code>plugins.json</code>，索引会被缓存 15 分钟，需要立即刷新请点上方"刷新插件索引"。
+                    </div>
                     <table id="plugin-table"></table>
                 </div>
             </div>
