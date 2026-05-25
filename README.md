@@ -238,6 +238,49 @@ error: () => {
 
 如你所见这是一个PHP 8 原生项目 + 自研 MVC/路由内核 + Composer 组件所构成的项目，如果您需要修改并二次编译本项目，您需要满足ACG-FAKA所需要的一切前置内容。
 
+## 开发规范
+
+本仓库不再依赖异次元应用商店分发升级包，主程序版本通过 **GitHub Releases + 仓库内迁移脚本** 自管理。新增或修改数据库结构时，请遵守以下约定：
+
+### 1. 改 `kernel/Install/Install.sql` 必须同步加 `migrations/{version}.sql`
+
+`Install.sql` 是**全新安装**用的完整 schema，**它必须始终反映"最新版"的数据库结构**。任何对它的修改（加表、加列、改类型、加索引等）都必须同步附带一份**增量迁移**：
+
+```
+migrations/{下一版本号}.sql
+```
+
+这份增量 SQL 描述"从上一版升级到本版的全部 ALTER 语句"，由 `App\Util\Migrator` 在用户升级时自动执行。SQL 文件里可使用 `__PREFIX__` 占位符，运行时会被替换成实际表前缀。
+
+> **错误示例**：仅改 `Install.sql` 给 `commodity` 表加了 `premium_until` 列，但没新建 `migrations/3.5.1.sql`。结果：新装的用户没事，**老用户升级后该列不存在**，相关功能直接报错。
+>
+> **正确做法**：同一次提交里既改 `Install.sql`，又新建 `migrations/3.5.1.sql` 写明 `ALTER TABLE __PREFIX__commodity ADD COLUMN premium_until datetime NULL DEFAULT NULL COMMENT '高级到期';`。
+
+### 2. 版本号要在三个地方对齐
+
+发布 `X.Y.Z` 时确保：
+
+- `config/app.php` 的 `version` 改为 `X.Y.Z`
+- `migrations/X.Y.Z.sql` 存在（即使本次没有数据库变更，也建一个空占位，作为版本锚点）
+- GitHub 仓库打 release tag `X.Y.Z`（不要带 `v` 前缀；带了也会被 `Github::normalizeVersion` 剥掉）
+
+### 3. 提交前自检：后台有"数据库结构异常"红色横幅吗？
+
+进入后台仪表盘时，`App\Util\SchemaDiff` 会读取 `Install.sql`、对比当前数据库结构，如果发现**缺表 / 缺列**会顶部展示一条警告横幅，并给出建议的 `ALTER` 语句。
+
+提交 / 发布前请确保：
+
+- 在干净测试库上执行 `Install.sql` → 跑迁移到目标版本 → 再次执行 `Install.sql` 等价操作，**不应该出现漂移告警**
+- 如果出现告警，说明 `Install.sql` 和 `migrations/` 不同步，请修正后再发版
+
+### 4. AI 协助开发时的强约束
+
+如果你让 AI（Claude / Cursor / Copilot 等）协助修改 `Install.sql`，**请在提示词里明确要求 AI 同步生成 `migrations/{version}.sql`**，否则它很可能只改 schema 不写迁移。本规范的存在就是为了在 AI 偷懒时被后台的红色横幅当场抓现行。
+
+### 5. 不要在 `migrations/*.sql` 里用 `CREATE TABLE` 替代 `ALTER`
+
+如果新增了表，迁移文件应该写 `CREATE TABLE IF NOT EXISTS __PREFIX__xxx (...)`（不要 `DROP TABLE`）。`Install.sql` 用 `DROP TABLE IF EXISTS` + `CREATE TABLE` 是因为它是全新安装；迁移脚本是叠加到已有库上的，决不能 `DROP`。
+
 ## 常见问题
 
 Q:异次元中含有后门吗？

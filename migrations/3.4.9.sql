@@ -1,0 +1,3 @@
+-- baseline placeholder for 3.4.9
+-- 该文件为空：3.4.9 是当前发行版本，不需要执行任何额外 SQL。
+-- 后续版本请新增 migrations/{version}.sql，可使用 __PREFIX__ 占位符。

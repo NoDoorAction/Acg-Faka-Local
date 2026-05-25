@@ -6,8 +6,11 @@ namespace App\Controller\Admin\Api;
 use App\Interceptor\ManageSession;
 use App\Interceptor\Waf;
 use App\Model\ManageLog;
+use App\Util\Github;
+use App\Util\Http;
 use App\Util\Opcache;
 use App\Util\PayConfig;
+use App\Util\SchemaDiff;
 use App\Util\Theme;
 use Kernel\Annotation\Inject;
 use Kernel\Annotation\Interceptor;
@@ -45,6 +48,140 @@ class App extends Manage
     public function update(): array
     {
         $this->app->update();
+        return $this->json(200, "升级完成");
+    }
+
+    /**
+     * GitHub Releases 列表 —— 字段与原 versions() 同构，前端 timeline 复用。
+     * @return array
+     * @throws JSONException
+     */
+    public function githubReleases(): array
+    {
+        $releases = Github::listReleases();
+        $rows = [];
+        foreach ($releases as $r) {
+            $rows[] = [
+                "version" => $r['version'],
+                "tag" => $r['tag'],
+                "content" => $r['body'] !== '' ? nl2br(htmlspecialchars((string)$r['body'])) : '<i>该版本无发布说明</i>',
+                "update_url" => $r['html_url'],
+                "update_date" => $r['published_at'] !== '' ? substr((string)$r['published_at'], 0, 10) : '',
+                "beta" => $r['prerelease'] ? 1 : 0,
+            ];
+        }
+        return $this->json(200, "ok", $rows);
+    }
+
+    /**
+     * 当前 vs GitHub 最新版本。
+     * @return array
+     * @throws JSONException
+     */
+    public function githubLatest(): array
+    {
+        $latest = Github::latestRelease();
+        $local = (string)((array)config("app"))['version'];
+        if ($latest === null) {
+            return $this->json(200, "ok", ["local" => $local, "latest" => true, "version" => $local, "html_url" => "", "body" => ""]);
+        }
+        $version = (string)$latest['version'];
+        return $this->json(200, "ok", [
+            "local" => $local,
+            "latest" => $version === $local,
+            "version" => $version,
+            "tag" => (string)$latest['tag'],
+            "html_url" => (string)$latest['html_url'],
+            "body" => (string)$latest['body'],
+            "published_at" => (string)$latest['published_at'],
+        ]);
+    }
+
+    /**
+     * 触发：从 GitHub 下载指定 tag 的源码 zip 并升级。
+     * @return array
+     * @throws JSONException
+     */
+    public function githubUpdate(): array
+    {
+        $tag = trim((string)($_POST['tag'] ?? ''));
+        if ($tag === '') {
+            throw new JSONException("缺少版本号");
+        }
+
+        // 找到对应 release
+        $target = null;
+        foreach (Github::listReleases() as $r) {
+            if ((string)$r['tag'] === $tag || (string)$r['version'] === $tag) {
+                $target = $r;
+                break;
+            }
+        }
+        if ($target === null) {
+            // 兜底：用 latest 是否匹配
+            $latest = Github::latestRelease();
+            if ($latest !== null && ((string)$latest['tag'] === $tag || (string)$latest['version'] === $tag)) {
+                $target = $latest;
+            }
+        }
+        if ($target === null) {
+            throw new JSONException("未在 GitHub 仓库中找到版本 {$tag}");
+        }
+
+        $url = Github::pickDownloadUrl($target);
+        if ($url === '') {
+            throw new JSONException("该版本未提供可下载的 zip 资源");
+        }
+
+        $dir = BASE_PATH . "/kernel/Install/Update";
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        $zipPath = $dir . "/github-" . preg_replace('/[^A-Za-z0-9._\-]/', '_', $tag) . "-" . time() . ".zip";
+
+        if (!Http::download($url, $zipPath)) {
+            throw new JSONException("源码 zip 下载失败：{$url}");
+        }
+
+        $this->app->updateFromZip($zipPath, Github::normalizeVersion($tag));
+        ManageLog::log($this->getManage(), "从 GitHub 升级到 {$tag}");
+        return $this->json(200, "升级完成");
+    }
+
+    /**
+     * 触发：管理员手动上传的整包 zip。
+     * @return array
+     * @throws JSONException
+     */
+    /**
+     * 数据库结构健康检查：对比 Install.sql 与当前 DB，列出缺失的表/列与建议 SQL。
+     * @return array
+     * @throws JSONException
+     */
+    public function schemaCheck(): array
+    {
+        return $this->json(200, "ok", SchemaDiff::diff());
+    }
+
+    public function localUpdate(): array
+    {
+        $path = (string)($_POST['path'] ?? '');
+        $version = trim((string)($_POST['version'] ?? ''));
+        if ($path === '' || str_contains($path, '..')) {
+            throw new JSONException("非法的安装包路径");
+        }
+        $src = BASE_PATH . $path;
+        if (!is_file($src)) {
+            throw new JSONException("升级包不存在，请重新上传");
+        }
+        if (strtolower((string)pathinfo($src, PATHINFO_EXTENSION)) !== 'zip') {
+            @unlink($src);
+            throw new JSONException("仅支持 zip 升级包");
+        }
+
+        // 版本号留空 → 服务层自动从 zip 内 config/app.php 识别
+        $this->app->updateFromZip($src, $version === '' ? '' : Github::normalizeVersion($version));
+        ManageLog::log($this->getManage(), $version === '' ? "通过本地 zip 自动识别版本升级" : "通过本地 zip 升级到 {$version}");
         return $this->json(200, "升级完成");
     }
 

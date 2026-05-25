@@ -1,0 +1,180 @@
+<?php
+declare(strict_types=1);
+
+namespace App\Util;
+
+use Kernel\Exception\JSONException;
+
+class Github
+{
+    private const API = "https://api.github.com";
+
+    /**
+     * @return array{owner: string, repo: string, token: string}
+     */
+    private static function repo(): array
+    {
+        $app = (array)config("app");
+        $owner = trim((string)($app['github_owner'] ?? ''));
+        $repo = trim((string)($app['github_repo'] ?? ''));
+        $token = trim((string)($app['github_token'] ?? ''));
+        if ($owner === '' || $repo === '') {
+            throw new JSONException("未配置 github_owner / github_repo，请先在 config/app.php 中设置");
+        }
+        return ["owner" => $owner, "repo" => $repo, "token" => $token];
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     * @throws JSONException
+     */
+    public static function listReleases(): array
+    {
+        $r = self::repo();
+        $url = self::API . "/repos/{$r['owner']}/{$r['repo']}/releases?per_page=30";
+        $data = self::get($url, $r['token']);
+        if (!is_array($data)) {
+            return [];
+        }
+        $list = [];
+        foreach ($data as $item) {
+            if (!is_array($item) || !empty($item['draft'])) {
+                continue;
+            }
+            $list[] = self::shape($item);
+        }
+        return $list;
+    }
+
+    /**
+     * @throws JSONException
+     */
+    public static function latestRelease(): ?array
+    {
+        $r = self::repo();
+        $url = self::API . "/repos/{$r['owner']}/{$r['repo']}/releases/latest";
+        try {
+            $data = self::get($url, $r['token']);
+            if (is_array($data) && !empty($data['tag_name'])) {
+                return self::shape($data);
+            }
+        } catch (JSONException $e) {
+            // 仓库可能没有正式 release，fallback 到 tags
+        }
+        $tagsUrl = self::API . "/repos/{$r['owner']}/{$r['repo']}/tags?per_page=1";
+        $tags = self::get($tagsUrl, $r['token']);
+        if (is_array($tags) && !empty($tags[0]['name'])) {
+            $tag = $tags[0];
+            return [
+                "tag" => (string)$tag['name'],
+                "version" => self::normalizeVersion((string)$tag['name']),
+                "name" => (string)$tag['name'],
+                "body" => "",
+                "published_at" => "",
+                "zipball_url" => (string)($tag['zipball_url'] ?? ""),
+                "html_url" => "https://github.com/{$r['owner']}/{$r['repo']}/releases/tag/" . urlencode((string)$tag['name']),
+                "prerelease" => false,
+                "assets" => [],
+            ];
+        }
+        return null;
+    }
+
+    /**
+     * 优先使用 release assets 中第一个 zip（通常带 vendor），否则使用 zipball_url。
+     */
+    public static function pickDownloadUrl(array $release): string
+    {
+        if (!empty($release['assets']) && is_array($release['assets'])) {
+            foreach ($release['assets'] as $asset) {
+                $name = strtolower((string)($asset['name'] ?? ''));
+                $url = (string)($asset['browser_download_url'] ?? '');
+                if ($url !== '' && str_ends_with($name, '.zip')) {
+                    return $url;
+                }
+            }
+        }
+        return (string)($release['zipball_url'] ?? '');
+    }
+
+    public static function normalizeVersion(string $tag): string
+    {
+        $tag = trim($tag);
+        if ($tag !== '' && ($tag[0] === 'v' || $tag[0] === 'V')) {
+            $tag = substr($tag, 1);
+        }
+        return $tag;
+    }
+
+    /**
+     * @param array<string, mixed> $item
+     * @return array<string, mixed>
+     */
+    private static function shape(array $item): array
+    {
+        $tag = (string)($item['tag_name'] ?? '');
+        $assets = [];
+        foreach ((array)($item['assets'] ?? []) as $asset) {
+            if (!is_array($asset)) {
+                continue;
+            }
+            $assets[] = [
+                "name" => (string)($asset['name'] ?? ''),
+                "browser_download_url" => (string)($asset['browser_download_url'] ?? ''),
+                "size" => (int)($asset['size'] ?? 0),
+            ];
+        }
+        return [
+            "tag" => $tag,
+            "version" => self::normalizeVersion($tag),
+            "name" => (string)($item['name'] ?? $tag),
+            "body" => (string)($item['body'] ?? ''),
+            "published_at" => (string)($item['published_at'] ?? ''),
+            "zipball_url" => (string)($item['zipball_url'] ?? ''),
+            "html_url" => (string)($item['html_url'] ?? ''),
+            "prerelease" => (bool)($item['prerelease'] ?? false),
+            "assets" => $assets,
+        ];
+    }
+
+    /**
+     * @throws JSONException
+     */
+    private static function get(string $url, string $token = ""): mixed
+    {
+        try {
+            $headers = [
+                "Accept" => "application/vnd.github+json",
+                "X-GitHub-Api-Version" => "2022-11-28",
+                "User-Agent" => "acg-faka-local-updater",
+            ];
+            if ($token !== '') {
+                $headers["Authorization"] = "Bearer {$token}";
+            }
+            $resp = Http::make()->get($url, [
+                "headers" => $headers,
+                "timeout" => 15,
+            ]);
+            $body = (string)$resp->getBody()->getContents();
+            $code = $resp->getStatusCode();
+            if ($code === 403) {
+                throw new JSONException("GitHub 接口请求被限流（403），请在 config/app.php 配置 github_token");
+            }
+            if ($code === 404) {
+                throw new JSONException("GitHub 仓库或资源不存在（404），请检查 github_owner / github_repo");
+            }
+            if ($code >= 400) {
+                throw new JSONException("GitHub 接口返回错误：HTTP {$code}");
+            }
+            $json = json_decode($body, true);
+            if (!is_array($json)) {
+                throw new JSONException("GitHub 接口响应解析失败");
+            }
+            return $json;
+        } catch (JSONException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            throw new JSONException("无法连接 GitHub：" . $e->getMessage());
+        }
+    }
+}

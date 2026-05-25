@@ -32,6 +32,13 @@ interface App
     public function update(): void;
 
     /**
+     * 用本地/GitHub 下载的 zip 升级主程序。
+     * @param string $zipPath  已下载到本地的源码 zip 绝对路径
+     * @param string $targetVersion  目标版本号（写入 config/app.php）；留空时自动读取 zip 内 config/app.php 的 version 字段
+     */
+    public function updateFromZip(string $zipPath, string $targetVersion = ''): void;
+
+    /**
      *
      */
     public function upload(array $data): array;
