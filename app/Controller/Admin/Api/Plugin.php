@@ -34,7 +34,7 @@ class Plugin extends Manage
             if (!array_key_exists($plugins[$key]["id"], $appStore)) {
                 $plugins[$key]['icon'] = "/favicon.ico";
             } else {
-                $plugins[$key]['icon'] = \App\Service\App::APP_URL . $appStore[$plugins[$key]["id"]]['icon'];
+                $plugins[$key]['icon'] = \App\Util\GithubPluginRegistry::iconUrl((string)$appStore[$plugins[$key]["id"]]['icon']);
 
                 if ($plugin['VERSION'] !== $appStore[$plugin['PLUGIN_NAME']]["version"]) {
                     $plugins[$key]['HAVE_UPDATE'] = true;

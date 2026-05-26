@@ -146,7 +146,7 @@ HTML;
         if (!array_key_exists($plugin, $appStore)) {
             $icon = "/favicon.ico";
         } else {
-            $icon = App::APP_URL . $appStore[$plugin]['icon'];
+            $icon = \App\Util\GithubPluginRegistry::iconUrl((string)$appStore[$plugin]['icon']);
         }
 
 

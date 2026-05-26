@@ -98,7 +98,8 @@ class Pay extends Manage
             if (!array_key_exists($plugin["id"], $appStore)) {
                 $plugins[$index]['icon'] = "/favicon.ico";
             } else {
-                $plugins[$index]['icon'] = \App\Service\App::APP_URL . $appStore[$plugin["id"]]['icon'];
+                // store.cache 自 3.5.5 起存绝对 URL；老的 cache 是相对路径，用 iconUrl 兼容处理
+                $plugins[$index]['icon'] = \App\Util\GithubPluginRegistry::iconUrl((string)$appStore[$plugin["id"]]['icon']);
                 if ($plugin['info']['version'] !== $appStore[$plugin['id']]["version"]) {
                     $plugins[$index]['have_update'] = true;
                 }

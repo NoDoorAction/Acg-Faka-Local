@@ -145,7 +145,13 @@
         },
         {
             field: 'version', title: '版本', formatter: function (val, item) {
-                return `<span class="a-badge a-badge-secondary">${item.version}</span>`;
+                let html = `<span class="a-badge a-badge-secondary">${item.version}</span>`;
+                if (item.install == 1) {
+                    html += ` <span class="a-badge a-badge-success" title="已通过商店追踪"><i class="fa-duotone fa-regular fa-circle-check"></i> 已安装</span>`;
+                } else if (item.install == 2) {
+                    html += ` <span class="a-badge a-badge-warning" title="目录里有同名插件文件，但不是通过本商店安装的（可能是老版本异次元自带，或你 SFTP 直接传上去的）"><i class="fa-duotone fa-regular fa-circle-exclamation"></i> 本地预装 ${item.local_version ? '· v' + item.local_version : ''}</span>`;
+                }
+                return html;
             }
         },
         {
@@ -219,6 +225,50 @@
                                 table.refresh();
                             });
                         }, "卸载插件", "确认卸载");
+                    }
+                },
+                {
+                    icon: 'fa-duotone fa-regular fa-link',
+                    title: "接管追踪",
+                    show: item => item.install == 2,
+                    class: "text-success",
+                    click: (event, value, row, index) => {
+                        message.ask(
+                            `检测到 <b>${row.plugin_name}</b> 的文件已经存在，但不是通过本商店安装的。<br><br>` +
+                            `点"确认接管"后会写入 <code>.faka-installed.json</code> 追踪标记，之后就能像普通商店插件一样<b>更新 / 卸载</b>。<br><br>` +
+                            `<span class="text-muted" style="font-size:12px;">不会改任何业务代码或数据，只新建一个标记文件。</span>`,
+                            () => {
+                                util.post('/admin/api/app/claimPlugin', {
+                                    plugin_key: row.plugin_key,
+                                    type: row.type
+                                }, res => {
+                                    message.success(res.msg || "已接管");
+                                    table.refresh();
+                                });
+                            }, "接管本地预装插件", "确认接管"
+                        );
+                    }
+                },
+                {
+                    icon: 'fa-duotone fa-regular fa-trash-xmark',
+                    title: "强制移除",
+                    show: item => item.install == 2,
+                    class: "text-danger",
+                    click: (event, value, row, index) => {
+                        message.ask(
+                            `<b style="color:#d9534f;">这是本地预装插件，不是通过本商店安装的。</b><br><br>` +
+                            `如果强制移除，<b>${row.plugin_name}</b> 的整个目录会被删除。<br>` +
+                            `如果你不确定这个插件是不是业务在用的，建议先<b>接管追踪</b>而不是直接移除。<br><br>` +
+                            `<span class="text-muted" style="font-size:12px;">如果文件不是 PHP 进程用户拥有，删除可能失败，会提示你怎么 chown。</span>`,
+                            () => {
+                                util.post('/admin/api/app/uninstall', {
+                                    plugin_key: row.plugin_key,
+                                    type: row.type
+                                }, res => {
+                                    table.refresh();
+                                });
+                            }, "强制移除本地预装插件", "确认移除"
+                        );
                     }
                 }
             ]

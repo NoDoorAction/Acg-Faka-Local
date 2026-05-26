@@ -106,6 +106,27 @@ class GithubPluginRegistry
         return null;
     }
 
+    /**
+     * 把 plugins.json 里的相对 icon 路径转为 raw.githubusercontent.com 绝对 URL。
+     * 已是 http(s):// 开头的路径原样返回；空值返回 /favicon.ico 兜底。
+     */
+    public static function iconUrl(string $icon): string
+    {
+        $icon = trim($icon);
+        if ($icon === '') {
+            return '/favicon.ico';
+        }
+        if (str_contains($icon, '://')) {
+            return $icon;
+        }
+        try {
+            $r = self::repo();
+            return "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$r['branch']}/" . ltrim($icon, '/');
+        } catch (\Throwable $e) {
+            return '/favicon.ico';
+        }
+    }
+
     public static function clearCache(): void
     {
         $f = self::cachePath();

@@ -492,7 +492,12 @@ class App extends Manage
         $entryFile = $type === 2 ? "{$installPath}/Config.php" : "{$installPath}/Config/Info.php";
 
         if (is_file($entryFile)) {
-            $row['install'] = 1;
+            // install=1：通过商店安装并写过 .faka-installed.json 标记
+            // install=2：目录存在但无标记 —— 老版本异次元自带、或用户 SFTP 自己丢的预装文件
+            //   - 不显示"卸载"按钮（避免误删用户精心配置的插件），改为"接管追踪"
+            //   - 接管后变成 install=1，常规更新/卸载按钮才出现
+            $marker = rtrim($installPath, '/') . '/.faka-installed.json';
+            $row['install'] = is_file($marker) ? 1 : 2;
             try {
                 if ($type === 2) {
                     $namespace = "App\\View\\User\\Theme\\{$key}\\Config";
@@ -514,6 +519,49 @@ class App extends Manage
         }
 
         return $row;
+    }
+
+    /**
+     * 接管追踪：给一个本地预装但无标记的插件补写 .faka-installed.json，之后视为商店安装。
+     * 调用场景：用户在应用商店页对 install=2 的条目点"接管追踪"。
+     */
+    public function claimPlugin(): array
+    {
+        $key = (string)($_POST['plugin_key'] ?? '');
+        $type = (int)($_POST['type'] ?? 0);
+        if ($key === '' || !preg_match('/^[A-Za-z][A-Za-z0-9_]*$/', $key)) {
+            throw new JSONException('非法的插件标识');
+        }
+
+        $pluginPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$key}",
+            2 => BASE_PATH . "/app/View/User/Theme/{$key}",
+            default => BASE_PATH . "/app/Plugin/{$key}",
+        };
+        if (!is_dir($pluginPath)) {
+            throw new JSONException('插件目录不存在');
+        }
+        $marker = $pluginPath . '/.faka-installed.json';
+        if (is_file($marker)) {
+            return $this->json(200, '已是商店追踪状态');
+        }
+
+        $payload = json_encode([
+            'installed_at' => date('Y-m-d H:i:s'),
+            'source'       => 'claimed_existing',
+            'plugin_key'   => $key,
+            'plugin_type'  => $type,
+            'app_version'  => (string)((array)config('app'))['version'],
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT);
+
+        if (@file_put_contents($marker, $payload) === false) {
+            $diag = \App\Util\Permission::diagnose($marker);
+            $hint = \App\Util\Permission::suggestShellFix(rtrim($pluginPath, '/'));
+            throw new JSONException("接管失败：marker 文件写入不了。\n\n{$diag}\n\n建议在 SSH 里执行：\n{$hint}");
+        }
+        @chmod($marker, 0666);
+        ManageLog::log($this->getManage(), "接管追踪了本地预装插件 {$key}");
+        return $this->json(200, '已接管，现在可以通过商店流程更新 / 卸载该插件');
     }
 
     /**
@@ -561,7 +609,8 @@ class App extends Manage
             $remoteVersion = (string)($item['version'] ?? '');
 
             $appStore[$key] = [
-                "icon" => $item['icon'] ?? '',
+                // 写绝对 URL 入 cache，消费方 (Pay/Plugin Controller) 不需要再拼接前缀
+                "icon" => GithubPluginRegistry::iconUrl((string)($item['icon'] ?? '')),
                 "name" => $item['name'] ?? $key,
                 "version" => $remoteVersion,
                 "update_content" => $item['description'] ?? '',
@@ -730,14 +779,44 @@ class App extends Manage
         $pluginKey = (string)$_POST['plugin_key'];
         $type = (int)$_POST['type'];
 
+        // _plugin_stop 会写 Config/Config.php 把 STATUS 改成 0，再触发 STOP hook。
+        // 若 Config.php 是 root 等其他用户拥有（旧版异次元附带的插件常见），
+        // www 用户没法 chmod 也没法写入，会抛"没有文件写入权限"。
+        // 反正下一步就要 delDirectory 整个插件，不必为了写一个即将被删的文件而失败。
+        $stopWarning = null;
         if ($type == 0) {
-            _plugin_stop($pluginKey);
+            try {
+                _plugin_stop($pluginKey);
+            } catch (\Throwable $e) {
+                // 容错：记下来后面拼到响应里，继续删文件
+                $stopWarning = $e->getMessage();
+            }
         }
 
-        $this->app->uninstallPlugin($pluginKey, $type);
+        try {
+            $this->app->uninstallPlugin($pluginKey, $type);
+        } catch (\Throwable $e) {
+            throw new JSONException($e->getMessage());
+        }
+
+        // 卸载后再核对目录是否真的没了。owner 错位时 delDirectory 会静默失败，必须明示用户。
+        $pluginPath = match ($type) {
+            1 => BASE_PATH . "/app/Pay/{$pluginKey}/",
+            2 => BASE_PATH . "/app/View/User/Theme/{$pluginKey}/",
+            default => BASE_PATH . "/app/Plugin/{$pluginKey}/",
+        };
+        if (is_dir($pluginPath)) {
+            $diag = \App\Util\Permission::diagnose(rtrim($pluginPath, '/'));
+            $hint = \App\Util\Permission::suggestShellFix(rtrim($pluginPath, '/'));
+            throw new JSONException("插件文件未能完全删除（可能是文件所有者不是 PHP 进程用户）。\n\n{$diag}\n\n建议在 SSH 里执行：\n{$hint}");
+        }
 
         ManageLog::log($this->getManage(), "卸载了应用({$pluginKey})");
-        return $this->json(200, "卸载完成");
+        $msg = "卸载完成";
+        if ($stopWarning !== null) {
+            $msg .= "（注：插件 stop 钩子因权限问题被跳过，已直接删除文件）";
+        }
+        return $this->json(200, $msg);
     }
 
     /**
@@ -751,8 +830,9 @@ class App extends Manage
             "limit" => (int)$_POST['limit']
         ]);
 
+        // 开发者中心已下线，但保留接口以避免老前端报 500。icon 用插件仓库的绝对 URL 兜底。
         foreach ($plugins['rows'] as &$plugin) {
-            $plugin['icon'] = \App\Service\App::APP_URL . "/{$plugin['icon']}";
+            $plugin['icon'] = GithubPluginRegistry::iconUrl((string)($plugin['icon'] ?? ''));
         }
 
         $json = $this->json(data: [

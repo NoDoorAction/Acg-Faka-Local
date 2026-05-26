@@ -95,6 +95,18 @@ class App implements \App\Service\App
         }
 
         Permission::makeTreeWritable($pluginPath);
+
+        // 写商店追踪标记：用于区分"通过商店安装"和"老版本异次元附带 / 用户 SFTP 自己丢的预装文件"。
+        // enrichPluginRow 根据这个 marker 把 install 字段渲染成 1（商店安装）或 2（本地预装/未追踪）。
+        $marker = $pluginPath . '.faka-installed.json';
+        @file_put_contents($marker, json_encode([
+            'installed_at' => date('Y-m-d H:i:s'),
+            'source'       => 'github_registry',
+            'plugin_key'   => $key,
+            'plugin_type'  => $type,
+            'app_version'  => (string)((array)config('app'))['version'],
+        ], JSON_UNESCAPED_UNICODE | JSON_PRETTY_PRINT));
+        @chmod($marker, 0666);
     }
 
     /**

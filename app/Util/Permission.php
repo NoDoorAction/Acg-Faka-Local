@@ -139,6 +139,22 @@ class Permission
         }
     }
 
+    /**
+     * 根据当前 PHP 进程用户 + 路径所有者，给出一条用户能直接复制粘贴的 shell 命令。
+     * 用于"没有写入权限"的错误消息附带"怎么修"指引。
+     *
+     * 注意输出里的 ":" 是分隔符（user:group），用户大概率明白；为了少踩 Windows 反斜杠路径的坑，
+     * 路径用单引号包起来。
+     */
+    public static function suggestShellFix(string $path): string
+    {
+        $webUser = function_exists('posix_geteuid') && function_exists('posix_getpwuid')
+            ? (posix_getpwuid(posix_geteuid())['name'] ?? 'www')
+            : 'www';
+        $safePath = "'" . str_replace("'", "'\\''", $path) . "'";
+        return "sudo chown -R {$webUser}:{$webUser} {$safePath} && sudo chmod -R u+rwX,g+rX {$safePath}";
+    }
+
     private static function ownerLine(string $path): string
     {
         $mode = @fileperms($path);

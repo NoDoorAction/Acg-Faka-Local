@@ -1,0 +1,24 @@
+-- migrations/3.5.5.sql
+-- 3.5.5 没有数据库 schema 变更。修复一组现网真实问题。
+--
+-- 修复点：
+-- 1. 应用商店"明明没装却全部显示已安装"
+--    根因：install 标志只看 app/Plugin/{key}/Config/Info.php 是否存在；
+--          老版本异次元本身就附带了一批插件文件，所以全部都被判为已装。
+--    修法：商店安装时写入 .faka-installed.json marker；列表区分
+--          install=1 (商店安装，显示更新/卸载) vs install=2 (本地预装/未追踪，
+--          只显示"接管追踪 / 强制移除"两个按钮)。
+--    新增端点 /admin/api/app/claimPlugin 用于把本地预装插件纳入商店追踪。
+--
+-- 2. "一点卸载就没有文件写入权限"
+--    根因：uninstall 先调 _plugin_stop，它会写 Config/Config.php 把 STATUS 改 0，
+--          但 Config.php 是 root:root 755，PHP 进程 www 既不是 owner 也没写权限，
+--          chmod 也不生效，setConfig 直接抛 JSONException，根本到不了 delDirectory。
+--    修法：uninstall 容错调用 _plugin_stop；删完再核对目录是否还在，没删干净时
+--          通过 Permission::suggestShellFix 拼出一条可直接复制粘贴的
+--          `sudo chown -R www:www ... && sudo chmod -R u+rwX,g+rX ...` 提示用户。
+--
+-- 3. 清理 4 个对已删 \App\Service\App::APP_URL 常量的悬空引用
+--    （app/Controller/Admin/Api/{App,Pay,Plugin}.php 与 app/Controller/Admin/Plugin.php），
+--    任一点击都会 fatal。改用 GithubPluginRegistry::iconUrl()，
+--    同时把 store.cache 里的 icon 写成绝对 URL，消费方不再需要前缀。
