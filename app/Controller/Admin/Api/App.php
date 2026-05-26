@@ -67,7 +67,8 @@ class App extends Manage
             $rows[] = [
                 "version" => $r['version'],
                 "tag" => $r['tag'],
-                "content" => $r['body'] !== '' ? nl2br(htmlspecialchars((string)$r['body'])) : '<i>该版本无发布说明</i>',
+                // 自 3.5.5 起返回原始 markdown 字符串；前端用 _renderMd() 渲染为 HTML
+                "content" => (string)$r['body'],
                 "update_url" => $r['html_url'],
                 "update_date" => $r['published_at'] !== '' ? substr((string)$r['published_at'], 0, 10) : '',
                 "beta" => $r['prerelease'] ? 1 : 0,

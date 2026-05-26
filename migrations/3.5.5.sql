@@ -22,3 +22,12 @@
 --    （app/Controller/Admin/Api/{App,Pay,Plugin}.php 与 app/Controller/Admin/Plugin.php），
 --    任一点击都会 fatal。改用 GithubPluginRegistry::iconUrl()，
 --    同时把 store.cache 里的 icon 写成绝对 URL，消费方不再需要前缀。
+--
+-- 4. 主程序升级 / 版本时间线 UI 支持渲染 release notes 的 Markdown
+--    后端 githubReleases 不再 nl2br+htmlspecialchars，直接返回原始 markdown；
+--    前端 global.js 新增 _renderMd() 迷你 markdown 渲染器（~150 LOC，
+--    支持标题/列表/代码块/行内代码/粗斜体/链接/引用/分隔线/段落/原生 HTML 直通）
+--
+-- 5. 应用商店列表加类型筛选按钮（全部 / 通用插件 / 支付插件 / 主题模板）
+--    Store.html 加 .plugin-filter 按钮组；home.js 把 group 注入 table.queryParams
+--    并触发 refresh。默认显示"全部"。

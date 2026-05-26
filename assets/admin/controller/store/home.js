@@ -118,6 +118,23 @@
     $(".btn-local-install").on("click", _LocalInstall);
     $(".btn-refresh-index").on("click", _RefreshIndex);
 
+    // 类型筛选按钮：把 group 参数注入 table.queryParams，refresh 时会随 POST 带上
+    $(".plugin-filter button").on("click", function () {
+        const group = $(this).data("group");
+        $(".plugin-filter button").removeClass("active btn-light-primary").addClass("btn-light");
+        $(this).removeClass("btn-light").addClass("active btn-light-primary");
+
+        // table.queryParams 是 bootstrap-table 在每次请求时合并的 map，直接修改它即可
+        if (!table.queryParams) table.queryParams = {};
+        if (parseInt(group) === -1) {
+            delete table.queryParams.group;
+        } else {
+            table.queryParams.group = parseInt(group);
+        }
+        table.queryParams.page = 1;
+        table.refresh(false);
+    });
+
     table.setColumns([
         {
             field: 'plugin_name', title: '插件', formatter: function (val, item) {
