@@ -81,12 +81,34 @@ class Github
     }
 
     /**
-     * 优先使用 release assets 中第一个 zip（通常带 vendor），否则使用 zipball_url。
+     * 选择 release 的下载 URL。
+     *
+     * 优先级（从高到低）：
+     *   1. 文件名含 "overlay" 的 zip asset —— 覆盖包，已剔除 config/database.php、
+     *      config/store.php、runtime/、kernel/Install/Lock 等，可直接解压覆盖到运行中的站点
+     *   2. 其它 .zip asset —— 一般是带 vendor 的完整包
+     *   3. zipball_url —— GitHub 自动生成的源码 zip（最低优先，因为含 .git 元数据外壳，
+     *      还可能在 GitHub 临时存储里抖动）
+     *
+     * 这样一旦发布者上传了 overlay zip，用户的"一键升级"会自动用它，不需要手动选。
      */
     public static function pickDownloadUrl(array $release): string
     {
-        if (!empty($release['assets']) && is_array($release['assets'])) {
-            foreach ($release['assets'] as $asset) {
+        $assets = (array)($release['assets'] ?? []);
+        if ($assets) {
+            // 第一遍：找 overlay
+            foreach ($assets as $asset) {
+                if (!is_array($asset)) continue;
+                $name = strtolower((string)($asset['name'] ?? ''));
+                $url = (string)($asset['browser_download_url'] ?? '');
+                if ($url === '' || !str_ends_with($name, '.zip')) continue;
+                if (str_contains($name, 'overlay')) {
+                    return $url;
+                }
+            }
+            // 第二遍：任意 zip
+            foreach ($assets as $asset) {
+                if (!is_array($asset)) continue;
                 $name = strtolower((string)($asset['name'] ?? ''));
                 $url = (string)($asset['browser_download_url'] ?? '');
                 if ($url !== '' && str_ends_with($name, '.zip')) {
@@ -95,6 +117,22 @@ class Github
             }
         }
         return (string)($release['zipball_url'] ?? '');
+    }
+
+    /**
+     * 判断 release 是否携带 overlay zip asset。
+     * UI 用于标注"覆盖包就绪"徽标。
+     */
+    public static function hasOverlayAsset(array $release): bool
+    {
+        foreach ((array)($release['assets'] ?? []) as $asset) {
+            if (!is_array($asset)) continue;
+            $name = strtolower((string)($asset['name'] ?? ''));
+            if (str_ends_with($name, '.zip') && str_contains($name, 'overlay')) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static function normalizeVersion(string $tag): string

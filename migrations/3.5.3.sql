@@ -1,0 +1,11 @@
+-- migrations/3.5.3.sql
+-- 3.5.3 没有数据库 schema 变更，纯代码清理 + 新增 overlay 包发布通道。
+-- 本次变更：
+-- 1. 删除 BASE_APP_SERVER define 及对应 MAIN_SERVER/STANDBY_SERVER1/2/GENERAL_SERVER 常量
+--    (config/store.php 里的 server 字段保留以便老配置不报错，但不再被读取)
+-- 2. 删除 /admin/api/app/ad 后端 + dashboard 公告加载 JS
+-- 3. 删除 /admin/api/app/setServer 实质功能 (前端入口本就已删)
+-- 4. 404.html 移除 Google Fonts 引用
+-- 5. README favicon 改本地
+-- 6. 新增 scripts/build-overlay.js 与 .gitignore
+-- 7. Github::pickDownloadUrl 优先选 *overlay*.zip

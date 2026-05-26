@@ -70,6 +70,7 @@ class App extends Manage
                 "update_url" => $r['html_url'],
                 "update_date" => $r['published_at'] !== '' ? substr((string)$r['published_at'], 0, 10) : '',
                 "beta" => $r['prerelease'] ? 1 : 0,
+                "overlay" => Github::hasOverlayAsset($r) ? 1 : 0,
             ];
         }
         return $this->json(200, "ok", $rows);
@@ -85,7 +86,7 @@ class App extends Manage
         $latest = Github::latestRelease();
         $local = (string)((array)config("app"))['version'];
         if ($latest === null) {
-            return $this->json(200, "ok", ["local" => $local, "latest" => true, "version" => $local, "html_url" => "", "body" => ""]);
+            return $this->json(200, "ok", ["local" => $local, "latest" => true, "version" => $local, "html_url" => "", "body" => "", "overlay" => 0]);
         }
         $version = (string)$latest['version'];
         return $this->json(200, "ok", [
@@ -96,6 +97,7 @@ class App extends Manage
             "html_url" => (string)$latest['html_url'],
             "body" => (string)$latest['body'],
             "published_at" => (string)$latest['published_at'],
+            "overlay" => Github::hasOverlayAsset($latest) ? 1 : 0,
         ]);
     }
 
@@ -188,23 +190,21 @@ class App extends Manage
     }
 
     /**
+     * 后台公告接口已停用，永远返回空列表以兼容旧前端。
      * @return array
      */
     public function ad(): array
     {
-        return $this->json(200, "ok", $this->app->ad());
+        return $this->json(200, "ok", []);
     }
 
 
     /**
-     * @throws JSONException
+     * 应用商店账号 init 已停用。
+     * @return array
      */
     public function init(): array
     {
-        $config = (array)config("store");
-        if (!$config['app_key'] || !$config["app_id"]) {
-            throw new JSONException("未登录");
-        }
         return $this->json(200, "ok");
     }
 
@@ -713,15 +713,14 @@ class App extends Manage
     /**
      * @throws JSONException
      */
+    /**
+     * 商店线路切换接口已停用，本地化版本不再使用任何远程商店服务器。
+     * 保留方法签名兼容旧的前端 JS，永远返回成功不做任何事。
+     * @return array
+     */
     public function setServer(): array
     {
-        $server = (int)$_POST['server'];
-        $config = config("store");
-        $config['server'] = $server;
-        $path = BASE_PATH . "/config/store.php";
-        setConfig($config, $path);
-        Opcache::invalidate($path);
-        return $this->json(200, "线路切换成功");
+        return $this->json(200, "ok");
     }
 
     /**

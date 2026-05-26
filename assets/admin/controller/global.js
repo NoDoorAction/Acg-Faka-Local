@@ -1,86 +1,6 @@
 !function () {
     let _LatestVersion, _LocalVersion, _IsLatestVersion;
 
-    function _LoadStoreUserInfo() {
-        util.post({
-            url: "/admin/api/app/service",
-            loader: false,
-            error: false,
-            fail: false,
-            done: res => {
-                const $StoreText = $(`.store-text`);
-
-                if (res?.data?.id <= 0) {
-                    return;
-                }
-
-
-                let html = format.badge(`<i class="fa-duotone fa-regular fa-user"></i> ${res.data.username}`, 'a-badge-light edit-store-user');
-
-                if (res.data.level === 0) {
-                    html += format.badge(`<i class="fa-duotone fa-regular fa-crown"></i> 專業版`, 'a-badge a-badge-primary hide-mobile');
-                }
-
-                if (res.data.level === 1) {
-                    html += format.badge(`<i class="fa-duotone fa-regular fa-crown"></i> 企業版`, 'a-badge a-badge-success');
-                }
-
-                if (res.data.developer == 1) {
-                    html += format.badge(`<i class="fa-duotone fa-regular fa-code"></i> 開發者`, 'a-badge a-badge-success hide-mobile');
-                    html += format.badge(`<i class="fa-duotone fa-regular fa-yen-sign"></i> ${res.data.balance}`, 'a-badge a-badge-warning hide-mobile');
-                }
-
-                $StoreText.html(format.badgeGroup(html));
-
-
-                $(`.edit-store-user`).click(() => {
-                    component.popup({
-                        submit: '/admin/api/app/editPassword',
-                        tab: [
-                            {
-                                name: `<i class="fa-duotone fa-regular fa-user-pen"></i> 修改应用商店账户密码`,
-                                form: [
-                                    {
-                                        title: false,
-                                        name: "tips_page",
-                                        type: "custom",
-                                        complete: (form, dom) => {
-                                            dom.html(`<div class="">               
-                  <div class="alert alert-warning d-flex align-items-center" role="alert">
-                    <p class="mb-0">
-                    <i class="fa-duotone fa-regular fa-circle-exclamation"></i> 旧密码输入错误超过10次，将会永久封禁账户，请慎重操作。
-                    </p>
-                  </div>`);
-                                        }
-                                    },
-                                    {title: false, name: "old_password", type: "password", placeholder: "旧密码"},
-                                    {
-                                        title: false,
-                                        name: "new_password",
-                                        type: "input",
-                                        placeholder: "新密码(6位字符以上)"
-                                    },
-                                    {
-                                        title: false,
-                                        name: "kick",
-                                        tips: "如果开启此功能，当您修改密码时，所有已登录服务器将被强制下线，必须使用新密码重新登录。建议仅在账号可能被他人盗用时使用，平时无需勾选。",
-                                        type: "switch",
-                                        placeholder: "踢掉所有已登录服务器|保持现状"
-                                    },
-                                ]
-                            }
-                        ],
-                        autoPosition: true,
-                        height: "auto",
-                        maxmin: false,
-                        confirmText: `${util.icon("fa-duotone fa-regular fa-rotate")} 确认修改`,
-                        width: "320px"
-                    });
-                });
-            }
-        });
-    }
-
     function _RenderCloudUpdate(dom) {
         dom.html(`<div class="github-update">
             <div class="alert alert-light border" style="background:#f8f9ff;">
@@ -116,10 +36,15 @@
                 <div class="gh-latest-tip text-success mt-2" style="display:none;font-size:13px;">
                     <i class="fa-duotone fa-regular fa-circle-check"></i> 你已经是最新版本
                 </div>
+                <div class="gh-overlay-badge mt-2" style="display:none;font-size:12px;color:#0d8a4f;background:#e8f7ee;border:1px solid #b8e6c8;border-radius:4px;padding:6px 10px;display:none;">
+                    <i class="fa-duotone fa-regular fa-box-check"></i>
+                    <b>覆盖包就绪</b>：本版本附带 <code>*-overlay.zip</code>，已剔除 config/database.php / config/store.php / runtime/ 等，可直接覆盖部署，无需手动剔除文件。
+                </div>
             </div>
             <div class="text-muted mt-3" style="font-size:12px;line-height:1.7;">
                 <i class="fa-duotone fa-regular fa-circle-info"></i> 系统会自动下载源码 zip → 覆盖代码 → 执行未应用的数据库迁移。<b>配置文件、用户数据、已装插件不会动</b>，升级前会自动备份关键目录至 <code>kernel/Install/Backup/</code>。<br>
-                <i class="fa-duotone fa-regular fa-shield-check text-primary"></i> <b>大跨度升级兜底</b>：迁移管理器会按版本号顺序应用 <code>migrations/*.sql</code>；如担心一次跨太多版本出问题，可在上方下拉选择中间版本逐个升级。
+                <i class="fa-duotone fa-regular fa-shield-check text-primary"></i> <b>大跨度升级兜底</b>：迁移管理器会按版本号顺序应用 <code>migrations/*.sql</code>；如担心一次跨太多版本出问题，可在上方下拉选择中间版本逐个升级。<br>
+                <i class="fa-duotone fa-regular fa-box-check text-success"></i> 若版本带有"覆盖包就绪"标记，升级会自动选用 overlay zip（更安全、文件更少）。
             </div>
         </div>`);
 
@@ -131,6 +56,7 @@
         const $link = dom.find(".gh-link");
         const $picker = dom.find(".gh-version-picker");
         const $select = dom.find(".gh-version-select");
+        const $overlay = dom.find(".gh-overlay-badge");
 
         $local.text(_LocalVersion || "");
 
@@ -145,8 +71,9 @@
                     const isLocal = r.version === _LocalVersion;
                     const flag = isLocal ? ' [当前]' : (idx === 0 ? ' [最新]' : '');
                     const beta = r.beta == 1 ? ' beta' : '';
+                    const overlayTag = r.overlay == 1 ? ' 📦' : '';
                     const date = r.update_date ? ` · ${r.update_date}` : '';
-                    opts += `<option value="${r.tag}" data-version="${r.version}" data-body="${encodeURIComponent(r.content || '')}" data-url="${r.update_url || ''}" ${idx === 0 ? 'selected' : ''}>v${r.version}${beta}${date}${flag}</option>`;
+                    opts += `<option value="${r.tag}" data-version="${r.version}" data-body="${encodeURIComponent(r.content || '')}" data-url="${r.update_url || ''}" data-overlay="${r.overlay || 0}" ${idx === 0 ? 'selected' : ''}>v${r.version}${beta}${overlayTag}${date}${flag}</option>`;
                 });
                 $select.html(opts);
                 $picker.show();
@@ -157,6 +84,7 @@
                     const tag = $(this).val();
                     const body = decodeURIComponent($opt.data("body") || "");
                     const url = $opt.data("url") || "";
+                    const hasOverlay = String($opt.data("overlay")) === "1";
                     const isLocal = version === _LocalVersion;
 
                     $latest.text(version).css("color", isLocal ? "#2fcf94" : "#f98ee7");
@@ -166,12 +94,19 @@
                     } else {
                         $link.hide();
                     }
+                    if (hasOverlay && !isLocal) {
+                        $overlay.css("display", "block");
+                    } else {
+                        $overlay.hide();
+                    }
                     if (isLocal) {
                         $btn.hide();
                         $tip.show();
                     } else {
                         $tip.hide();
-                        $btn.html(`<i class="fa-duotone fa-regular fa-arrows-rotate"></i> 立即升级到 v${version}`).show();
+                        const icon = hasOverlay ? "fa-box-check" : "fa-arrows-rotate";
+                        const suffix = hasOverlay ? "（覆盖包）" : "";
+                        $btn.html(`<i class="fa-duotone fa-regular ${icon}"></i> 立即升级到 v${version}${suffix}`).show();
                         $btn.data("tag", tag);
                     }
                 }).trigger("change");
@@ -191,15 +126,21 @@
                 }
                 if ($select.find("option").length > 0) return; // 已有 releases 列表，跳过
                 const d = res.data;
+                const hasOverlay = String(d.overlay) === "1";
                 $latest.text(d.version).css("color", d.latest ? "#2fcf94" : "#f98ee7");
                 $notes.text(d.body || "（该版本无发布说明）");
                 if (d.html_url) {
                     $link.attr("href", d.html_url).show();
                 }
+                if (hasOverlay && !d.latest) {
+                    $overlay.css("display", "block");
+                }
                 if (d.latest) {
                     $tip.show();
                 } else {
-                    $btn.html(`<i class="fa-duotone fa-regular fa-arrows-rotate"></i> 立即升级到 v${d.version}`).show();
+                    const icon = hasOverlay ? "fa-box-check" : "fa-arrows-rotate";
+                    const suffix = hasOverlay ? "（覆盖包）" : "";
+                    $btn.html(`<i class="fa-duotone fa-regular ${icon}"></i> 立即升级到 v${d.version}${suffix}`).show();
                     $btn.data("tag", d.tag || d.version);
                 }
             }
@@ -433,15 +374,6 @@
             }
         });
     }
-
-    function _AppServerSelect() {
-        $('.app-server-select').change(function () {
-            util.post("/admin/api/app/setServer", {server: $(this).val()}, res => {
-                message.success(res.msg);
-            });
-        });
-    }
-
 
     function _Pjax() {
         $(document).pjax('a[target!=_blank]', '#pjax-container', {fragment: '#pjax-container', timeout: 8000});

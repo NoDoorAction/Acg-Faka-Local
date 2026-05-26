@@ -13,15 +13,6 @@ use Kernel\Annotation\Bind;
 interface App
 {
     /**
-     * 应用商店地址
-     */
-    const APP_URL = BASE_APP_SERVER;
-    const MAIN_SERVER = "https://tencent.3rd.mcycdn.com";
-    const STANDBY_SERVER1 = "https://byte.3rd.mcycdn.com";
-    const STANDBY_SERVER2 = "https://standby.acgshe.com";
-    const GENERAL_SERVER = "https://aliyun.3rd.mcycdn.com";
-
-    /**
      * @return array
      */
     public function getVersions(): array;
@@ -43,11 +34,6 @@ interface App
      */
     public function upload(array $data): array;
 
-
-    /**
-     * @return array
-     */
-    public function ad(): array;
 
     /**
      *

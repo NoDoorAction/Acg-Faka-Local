@@ -19,13 +19,6 @@ error_reporting(0);
 const BASE_PATH = __DIR__ . "/../";
 require(BASE_PATH . '/vendor/autoload.php');
 require("Helper.php");
-//define
-define("BASE_APP_SERVER", match ((int)config("store")['server']) {
-    0 => App\Service\App::MAIN_SERVER,
-    1 => App\Service\App::STANDBY_SERVER1,
-    2 => App\Service\App::STANDBY_SERVER2,
-    3 => App\Service\App::GENERAL_SERVER
-});
 define("APP_VERSION", config('app')['version']);
 
 //session

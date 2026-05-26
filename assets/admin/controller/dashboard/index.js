@@ -1,35 +1,9 @@
 !function () {
-    const _AD_HTML = `<div class="d-flex align-items-start position-relative mb-3 p-3 rounded bg-light bg-opacity-50">
-        <div class="position-absolute top-0 start-0 rounded h-100 bg-primary" style="width: 3px;"></div>
-        <div class="ms-3 flex-grow-1">
-            <a href="[url]" [target] class="fw-bold text-decoration-none text-dark d-block mb-1">[title]</a>
-            <div class="text-muted small">[create_time]</div>
-        </div>
-    </div>`;
-
-    function loadAd() {
+    function renderEmptyAd() {
         const $adHandle = $('.ad-html');
-        // 加载公告数据
-        $.get("/admin/api/app/ad", res => {
-            if (res.code != 200) {
-                $adHandle.html('<div class="text-center text-muted py-4">暂无公告</div>');
-                return;
-            }
-
-            if (res.data.length === 0) {
-                $adHandle.html('<div class="text-center text-muted py-4">暂无公告</div>');
-                return;
-            }
-
-            let html = "";
-            res.data.forEach(item => {
-                html += _AD_HTML.replace("[title]", item.title)
-                    .replace("[create_time]", item.create_date)
-                    .replace("[url]", item.url ? item.url : "javascript:void(0)")
-                    .replace("[target]", item.url ? 'target="_blank"' : '');
-            });
-            $adHandle.html(html);
-        });
+        // 本地化版本不再从远程拉取公告，直接显示空态。
+        // 如需自定义站内公告，可在此处替换为静态 HTML 或读取本地 config。
+        $adHandle.html('<div class="text-center text-muted py-4">暂无公告</div>');
     }
 
     // 获取仪表板数据
@@ -190,7 +164,7 @@
         });
     }
 
-    loadAd();
+    renderEmptyAd();
     loadDashboardData(0);
     loadWeekStatistics();
 

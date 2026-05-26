@@ -1,0 +1,22 @@
+# 构建产物
+dist/
+
+# 临时文件
+*.log
+*.swp
+*.bak
+*.orig
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.idea/
+.vscode/
+.fleet/
+
+# 私有
+.env
+.env.local
+
+# 会话快照（开发期产物）
+2026-*-local-command-caveat*.txt

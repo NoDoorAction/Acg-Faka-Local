@@ -479,16 +479,6 @@ class App implements \App\Service\App
     }
 
     /**
-     * @return array
-     * @throws JSONException
-     */
-    public function ad(): array
-    {
-        // 隐私保护：不再向应用商店拉取广告
-        return [];
-    }
-
-    /**
      * @throws JSONException
      */
     public function install(): void
