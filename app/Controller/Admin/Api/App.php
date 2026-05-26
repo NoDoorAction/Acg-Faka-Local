@@ -344,6 +344,98 @@ class App extends Manage
     }
 
     /**
+     * 列出全部 GitHub 镜像线路 + 当前选中的 key + 自定义线路配置。
+     *
+     * 入参 ping=1 时同步对所有线路做一次并发 HEAD 探测，返回延迟（ms），
+     * 超时/失败 latency=-1。前端是否拉延迟由 UI 决定（"线路切换"弹窗才需要）。
+     *
+     * @return array
+     */
+    public function mirrorList(): array
+    {
+        $registry = \App\Util\Mirror::registry();
+        $active = \App\Util\Mirror::activeKey();
+
+        $store = (array)config('store');
+        $custom = (array)($store['custom_mirror'] ?? []);
+
+        $rows = [];
+        foreach ($registry as $key => $m) {
+            $rows[] = [
+                'key'           => $key,
+                'name'          => (string)($m['name'] ?? $key),
+                'desc'          => (string)($m['desc'] ?? ''),
+                'api'           => (string)($m['api'] ?? ''),
+                'raw'           => (string)($m['raw'] ?? ''),
+                'asset'         => (string)($m['asset'] ?? ''),
+                'api_supported' => (bool)($m['api_supported'] ?? true),
+                'latency'       => null,
+                'http'          => null,
+            ];
+        }
+
+        // ping=1 时做实测；UI 单独打开"线路切换"弹窗才需要，平时调用避免拖慢响应
+        if ((int)($_POST['ping'] ?? $_GET['ping'] ?? 0) === 1) {
+            try {
+                $pings = \App\Util\Mirror::pingAll();
+                foreach ($rows as &$row) {
+                    $p = $pings[$row['key']] ?? null;
+                    if ($p !== null) {
+                        $row['latency'] = ($p['ok'] ?? false) ? (int)$p['latency'] : -1;
+                        $row['http'] = $p['http'] ?? null;
+                    }
+                }
+                unset($row);
+            } catch (\Throwable $e) {
+                // pingAll 失败不阻塞列表返回
+            }
+        }
+
+        return $this->json(200, 'ok', [
+            'active' => $active,
+            'custom' => [
+                'api'   => (string)($custom['api'] ?? ''),
+                'raw'   => (string)($custom['raw'] ?? ''),
+                'asset' => (string)($custom['asset'] ?? ''),
+            ],
+            'items'  => $rows,
+        ]);
+    }
+
+    /**
+     * 切换当前镜像线路。
+     *
+     * 入参：
+     *   key:    'direct' / 'ghproxy' / 'ghfast' / 'gh-proxy' / 'jsdelivr' / 'custom'
+     *   custom: key=custom 时必填，{api: ..., raw: ..., asset: ...}
+     *
+     * @throws JSONException
+     */
+    public function mirrorSet(): array
+    {
+        $key = (string)($_POST['key'] ?? '');
+        if ($key === '') {
+            throw new JSONException('未指定线路 key');
+        }
+        $custom = [];
+        if ($key === 'custom') {
+            $custom = [
+                'api'   => trim((string)($_POST['custom_api']   ?? '')),
+                'raw'   => trim((string)($_POST['custom_raw']   ?? '')),
+                'asset' => trim((string)($_POST['custom_asset'] ?? '')),
+            ];
+        }
+        try {
+            \App\Util\Mirror::setActive($key, $custom);
+        } catch (\Throwable $e) {
+            throw new JSONException($e->getMessage());
+        }
+
+        ManageLog::log($this->getManage(), '切换 GitHub 镜像线路 → ' . $key);
+        return $this->json(200, '线路已切换，相关缓存已自动清理');
+    }
+
+    /**
      * 后台公告接口已停用，永远返回空列表以兼容旧前端。
      * @return array
      */
@@ -473,12 +565,12 @@ class App extends Manage
             "icon" => "",
         ];
 
-        // icon: 仓库内相对路径转为 raw.githubusercontent.com 的绝对 URL
+        // icon: 仓库内相对路径转为镜像 raw URL（线路自适应）
         $iconRel = (string)($item['icon'] ?? '');
         if ($iconRel !== '') {
             try {
                 $r = GithubPluginRegistry::repo();
-                $row['icon'] = "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$r['branch']}/" . ltrim($iconRel, '/');
+                $row['icon'] = \App\Util\Mirror::raw($r['owner'], $r['repo'], $r['branch'], $iconRel);
             } catch (\Throwable $e) {
                 // 配置缺失时忽略 icon
             }

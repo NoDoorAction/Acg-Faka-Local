@@ -75,7 +75,7 @@ class GithubPluginDownloader
         $r = GithubPluginRegistry::repo();
         $branch = $r['branch'];
 
-        $treeUrl = "https://api.github.com/repos/{$r['owner']}/{$r['repo']}/git/trees/{$branch}?recursive=1";
+        $treeUrl = Mirror::api("/repos/{$r['owner']}/{$r['repo']}/git/trees/{$branch}?recursive=1");
         $tree = self::apiGet($treeUrl, $r['token']);
         if (!isset($tree['tree']) || !is_array($tree['tree'])) {
             throw new JSONException("Trees API 返回数据格式错误");
@@ -112,7 +112,7 @@ class GithubPluginDownloader
             if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
                 throw new JSONException("无法创建子目录：{$dir}");
             }
-            $rawUrl = "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$branch}/{$f['path']}";
+            $rawUrl = Mirror::raw($r['owner'], $r['repo'], $branch, $f['path']);
             if (!Http::download($rawUrl, $local)) {
                 throw new JSONException("文件下载失败：{$rawUrl}");
             }

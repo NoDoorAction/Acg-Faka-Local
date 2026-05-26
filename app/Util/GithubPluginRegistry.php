@@ -52,7 +52,7 @@ class GithubPluginRegistry
         }
 
         $r = self::repo();
-        $url = "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$r['branch']}/plugins.json";
+        $url = Mirror::raw($r['owner'], $r['repo'], $r['branch'], 'plugins.json');
 
         try {
             $headers = [
@@ -121,7 +121,7 @@ class GithubPluginRegistry
         }
         try {
             $r = self::repo();
-            return "https://raw.githubusercontent.com/{$r['owner']}/{$r['repo']}/{$r['branch']}/" . ltrim($icon, '/');
+            return Mirror::raw($r['owner'], $r['repo'], $r['branch'], $icon);
         } catch (\Throwable $e) {
             return '/favicon.ico';
         }

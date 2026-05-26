@@ -7,7 +7,10 @@ use Kernel\Exception\JSONException;
 
 class Github
 {
-    private const API = "https://api.github.com";
+    /** 列表 / 最新 release 的本地缓存 TTL（秒）。镜像切换会主动清缓存 */
+    private const CACHE_TTL = 30 * 60;
+    private const CACHE_LIST   = 'releases.cache';
+    private const CACHE_LATEST = 'latest.cache';
 
     /**
      * @return array{owner: string, repo: string, token: string}
@@ -28,10 +31,16 @@ class Github
      * @return array<int, array<string, mixed>>
      * @throws JSONException
      */
-    public static function listReleases(): array
+    public static function listReleases(bool $force = false): array
     {
+        $cacheFile = self::cachePath(self::CACHE_LIST);
+        if (!$force && is_file($cacheFile) && (time() - (int)filemtime($cacheFile)) < self::CACHE_TTL) {
+            $data = json_decode((string)file_get_contents($cacheFile), true);
+            if (is_array($data)) return $data;
+        }
+
         $r = self::repo();
-        $url = self::API . "/repos/{$r['owner']}/{$r['repo']}/releases?per_page=30";
+        $url = Mirror::api("/repos/{$r['owner']}/{$r['repo']}/releases?per_page=30");
         $data = self::get($url, $r['token']);
         if (!is_array($data)) {
             return [];
@@ -43,29 +52,40 @@ class Github
             }
             $list[] = self::shape($item);
         }
+        @file_put_contents($cacheFile, json_encode($list, JSON_UNESCAPED_UNICODE));
         return $list;
     }
 
     /**
      * @throws JSONException
      */
-    public static function latestRelease(): ?array
+    public static function latestRelease(bool $force = false): ?array
     {
+        $cacheFile = self::cachePath(self::CACHE_LATEST);
+        if (!$force && is_file($cacheFile) && (time() - (int)filemtime($cacheFile)) < self::CACHE_TTL) {
+            $raw = (string)file_get_contents($cacheFile);
+            if ($raw === 'NULL') return null;
+            $data = json_decode($raw, true);
+            if (is_array($data)) return $data;
+        }
+
         $r = self::repo();
-        $url = self::API . "/repos/{$r['owner']}/{$r['repo']}/releases/latest";
+        $url = Mirror::api("/repos/{$r['owner']}/{$r['repo']}/releases/latest");
         try {
             $data = self::get($url, $r['token']);
             if (is_array($data) && !empty($data['tag_name'])) {
-                return self::shape($data);
+                $shaped = self::shape($data);
+                @file_put_contents($cacheFile, json_encode($shaped, JSON_UNESCAPED_UNICODE));
+                return $shaped;
             }
         } catch (JSONException $e) {
             // 仓库可能没有正式 release，fallback 到 tags
         }
-        $tagsUrl = self::API . "/repos/{$r['owner']}/{$r['repo']}/tags?per_page=1";
+        $tagsUrl = Mirror::api("/repos/{$r['owner']}/{$r['repo']}/tags?per_page=1");
         $tags = self::get($tagsUrl, $r['token']);
         if (is_array($tags) && !empty($tags[0]['name'])) {
             $tag = $tags[0];
-            return [
+            $shaped = [
                 "tag" => (string)$tag['name'],
                 "version" => self::normalizeVersion((string)$tag['name']),
                 "name" => (string)$tag['name'],
@@ -76,8 +96,28 @@ class Github
                 "prerelease" => false,
                 "assets" => [],
             ];
+            @file_put_contents($cacheFile, json_encode($shaped, JSON_UNESCAPED_UNICODE));
+            return $shaped;
         }
+        @file_put_contents($cacheFile, 'NULL');
         return null;
+    }
+
+    public static function clearCache(): void
+    {
+        foreach ([self::CACHE_LIST, self::CACHE_LATEST] as $f) {
+            $p = self::cachePath($f);
+            if (is_file($p)) @unlink($p);
+        }
+    }
+
+    private static function cachePath(string $name): string
+    {
+        $dir = BASE_PATH . '/runtime/plugin';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        return $dir . '/' . $name;
     }
 
     /**
@@ -103,7 +143,7 @@ class Github
                 $url = (string)($asset['browser_download_url'] ?? '');
                 if ($url === '' || !str_ends_with($name, '.zip')) continue;
                 if (str_contains($name, 'overlay')) {
-                    return $url;
+                    return Mirror::asset($url);
                 }
             }
             // 第二遍：任意 zip
@@ -112,11 +152,12 @@ class Github
                 $name = strtolower((string)($asset['name'] ?? ''));
                 $url = (string)($asset['browser_download_url'] ?? '');
                 if ($url !== '' && str_ends_with($name, '.zip')) {
-                    return $url;
+                    return Mirror::asset($url);
                 }
             }
         }
-        return (string)($release['zipball_url'] ?? '');
+        // zipball 走 github.com，也走镜像 asset 改写
+        return Mirror::asset((string)($release['zipball_url'] ?? ''));
     }
 
     /**

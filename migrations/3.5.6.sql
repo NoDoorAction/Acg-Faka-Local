@@ -1,0 +1,24 @@
+-- migrations/3.5.6.sql
+-- 3.5.6 没有数据库 schema 变更。新增 GitHub 镜像线路切换 + Github API 文件缓存。
+--
+-- 主要变更：
+-- 1. 新增 config/mirrors.php：硬编码 5 条镜像线路（direct / ghproxy / ghfast /
+--    gh-proxy / jsdelivr），自定义线路存 config/store.php 的 custom_mirror 字段。
+--
+-- 2. 新增 app/Util/Mirror.php：统一封装 api / raw / asset URL 改写，并提供
+--    pingAll() 并发 HEAD 测速。所有访问 GitHub 的代码（GithubPluginRegistry /
+--    GithubPluginDownloader / Github::pickDownloadUrl / App Controller icon URL）
+--    全部走 Mirror::*，不再硬编码 api.github.com / raw.githubusercontent.com。
+--
+-- 3. app/Util/Github.php 给 listReleases / latestRelease 加 30 分钟文件缓存
+--    （runtime/plugin/releases.cache / latest.cache），把后台打开一次轮询多次
+--    api.github.com 的频率降下来；切换线路时缓存自动清除。
+--
+-- 4. 新增 App Controller 端点：
+--      mirrorList  返回所有镜像 + 当前选中 + 自定义配置；ping=1 时同步并发测速
+--      mirrorSet   持久化用户的镜像选择（写 config/store.php 的 server 字段）
+--
+-- 5. 前端 UI：
+--    - Header.html 应用商店徽标旁加"线路 [当前镜像名]"按钮
+--    - global.js 新增 _OpenMirrorSwitch() 弹窗：列出全部线路 + 实时延迟（绿/黄/红）
+--      + 自定义线路（三段 URL 输入），保存后自动清缓存并刷新页面。
