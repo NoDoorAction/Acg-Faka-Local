@@ -92,17 +92,25 @@
                     </div>
                     <i class="fa-duotone fa-regular fa-arrow-right" style="color:#aaa;"></i>
                     <div style="flex:1;">
-                        <div style="font-size:13px;color:#666;">GitHub 最新</div>
+                        <div style="font-size:13px;color:#666;">目标版本</div>
                         <div style="font-size:18px;font-weight:600;" class="gh-latest">检测中...</div>
                     </div>
                 </div>
             </div>
+
+            <div class="gh-version-picker mb-3" style="display:none;">
+                <label class="form-label" style="font-size:12px;color:#666;margin-bottom:4px;">
+                    <i class="fa-duotone fa-regular fa-list-tree text-primary"></i> 选择要升级到的版本（默认最新，可挑任意 release 逐个升级）
+                </label>
+                <select class="form-select form-select-sm gh-version-select"></select>
+            </div>
+
             <div class="gh-notes" style="background:#fafafa;border-radius:4px;padding:12px;max-height:280px;overflow:auto;font-size:13px;color:#444;white-space:pre-wrap;line-height:1.6;">加载中...</div>
             <div class="text-center mt-3">
                 <a class="gh-link text-primary" target="_blank" style="font-size:12px;display:none;"><i class="fa-duotone fa-regular fa-arrow-up-right-from-square"></i> 在 GitHub 查看发布页</a>
             </div>
             <div class="text-center mt-3">
-                <button class="btn btn-primary gh-upgrade-btn" style="min-width:220px;display:none;">
+                <button type="button" class="btn btn-primary gh-upgrade-btn" style="min-width:220px;display:none;">
                     <i class="fa-duotone fa-regular fa-arrows-rotate"></i> 立即升级
                 </button>
                 <div class="gh-latest-tip text-success mt-2" style="display:none;font-size:13px;">
@@ -110,7 +118,8 @@
                 </div>
             </div>
             <div class="text-muted mt-3" style="font-size:12px;line-height:1.7;">
-                <i class="fa-duotone fa-regular fa-circle-info"></i> 系统会自动下载源码 zip → 覆盖代码 → 执行未应用的数据库迁移。<b>配置文件、用户数据、已装插件不会动</b>，升级前会自动备份关键目录至 <code>kernel/Install/Backup/</code>。
+                <i class="fa-duotone fa-regular fa-circle-info"></i> 系统会自动下载源码 zip → 覆盖代码 → 执行未应用的数据库迁移。<b>配置文件、用户数据、已装插件不会动</b>，升级前会自动备份关键目录至 <code>kernel/Install/Backup/</code>。<br>
+                <i class="fa-duotone fa-regular fa-shield-check text-primary"></i> <b>大跨度升级兜底</b>：迁移管理器会按版本号顺序应用 <code>migrations/*.sql</code>；如担心一次跨太多版本出问题，可在上方下拉选择中间版本逐个升级。
             </div>
         </div>`);
 
@@ -120,16 +129,67 @@
         const $latest = dom.find(".gh-latest");
         const $local = dom.find(".gh-local");
         const $link = dom.find(".gh-link");
+        const $picker = dom.find(".gh-version-picker");
+        const $select = dom.find(".gh-version-select");
 
         $local.text(_LocalVersion || "");
 
+        // 拉所有 releases 渲染下拉
         util.post({
-            url: "/admin/api/app/githubLatest", loader: false, done: res => {
+            url: "/admin/api/app/githubReleases", loader: false, error: false, fail: false,
+            done: res => {
+                if (res.code !== 200 || !Array.isArray(res.data) || res.data.length === 0) return;
+                const rows = res.data;
+                let opts = '';
+                rows.forEach((r, idx) => {
+                    const isLocal = r.version === _LocalVersion;
+                    const flag = isLocal ? ' [当前]' : (idx === 0 ? ' [最新]' : '');
+                    const beta = r.beta == 1 ? ' beta' : '';
+                    const date = r.update_date ? ` · ${r.update_date}` : '';
+                    opts += `<option value="${r.tag}" data-version="${r.version}" data-body="${encodeURIComponent(r.content || '')}" data-url="${r.update_url || ''}" ${idx === 0 ? 'selected' : ''}>v${r.version}${beta}${date}${flag}</option>`;
+                });
+                $select.html(opts);
+                $picker.show();
+
+                $select.off("change").on("change", function () {
+                    const $opt = $(this).find("option:selected");
+                    const version = $opt.data("version");
+                    const tag = $(this).val();
+                    const body = decodeURIComponent($opt.data("body") || "");
+                    const url = $opt.data("url") || "";
+                    const isLocal = version === _LocalVersion;
+
+                    $latest.text(version).css("color", isLocal ? "#2fcf94" : "#f98ee7");
+                    $notes.html(body || "<i>该版本无发布说明</i>");
+                    if (url) {
+                        $link.attr("href", url).show();
+                    } else {
+                        $link.hide();
+                    }
+                    if (isLocal) {
+                        $btn.hide();
+                        $tip.show();
+                    } else {
+                        $tip.hide();
+                        $btn.html(`<i class="fa-duotone fa-regular fa-arrows-rotate"></i> 立即升级到 v${version}`).show();
+                        $btn.data("tag", tag);
+                    }
+                }).trigger("change");
+            }
+        });
+
+        // githubLatest 只用作首次没拿到 releases 列表时的兜底显示
+        util.post({
+            url: "/admin/api/app/githubLatest", loader: false, error: false, fail: false,
+            done: res => {
                 if (res.code != 200) {
-                    $latest.text("获取失败");
-                    $notes.text(res.msg || "无法连接 GitHub");
+                    if ($latest.text() === "检测中...") {
+                        $latest.text("获取失败");
+                        $notes.text(res.msg || "无法连接 GitHub");
+                    }
                     return;
                 }
+                if ($select.find("option").length > 0) return; // 已有 releases 列表，跳过
                 const d = res.data;
                 $latest.text(d.version).css("color", d.latest ? "#2fcf94" : "#f98ee7");
                 $notes.text(d.body || "（该版本无发布说明）");
@@ -145,9 +205,11 @@
             }
         });
 
-        $btn.off("click").on("click", function () {
+        $btn.off("click").on("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
             const tag = $(this).data("tag");
-            if (!tag) return;
+            if (!tag) return false;
             message.ask(`即将从 GitHub 下载 <b>${tag}</b> 源码并覆盖部署，是否继续？`, () => {
                 util.post({
                     url: "/admin/api/app/githubUpdate",
@@ -158,6 +220,7 @@
                     }
                 });
             });
+            return false;
         });
     }
 
@@ -187,7 +250,7 @@
             </div>
 
             <div class="text-center mt-3">
-                <button class="btn btn-primary local-zip-submit" style="min-width:220px;" disabled>
+                <button type="button" class="btn btn-primary local-zip-submit" style="min-width:220px;" disabled>
                     <i class="fa-duotone fa-regular fa-folder-arrow-up"></i> 开始升级
                 </button>
             </div>
@@ -232,8 +295,10 @@
 
         $ver.on("input", refresh);
 
-        $submit.on("click", function () {
-            if (!uploadedPath) return;
+        $submit.off("click").on("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (!uploadedPath) return false;
             const version = $ver.val().trim();
             const tip = version
                 ? `即将覆盖部署，并把当前版本写为 <b>${version}</b>，是否继续？`
@@ -248,6 +313,7 @@
                     }
                 });
             });
+            return false;
         });
     }
 
@@ -432,8 +498,8 @@
                         <div style="margin-top:4px;font-size:12px;color:#9a6a00;">可能是版本升级时漏了对应的 <code>migrations/{version}.sql</code>，或安装迁移未跑完。建议在测试库验证后手动执行下方 SQL。</div>
                         ${sqlBlock}
                         <div style="margin-top:8px;">
-                            <button class="btn btn-sm btn-light schema-drift-dismiss" style="font-size:12px;">我已知晓，今天不再提示</button>
-                            <button class="btn btn-sm btn-light schema-drift-recheck" style="font-size:12px;">重新检测</button>
+                            <button type="button" class="btn btn-sm btn-light schema-drift-dismiss" style="font-size:12px;">我已知晓，今天不再提示</button>
+                            <button type="button" class="btn btn-sm btn-light schema-drift-recheck" style="font-size:12px;">重新检测</button>
                         </div>
                     </div>
                 </div>

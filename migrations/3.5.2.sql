@@ -1,0 +1,4 @@
+-- migrations/3.5.2.sql
+-- 3.5.2 没有数据库 schema 变更，纯前端 hotfix。
+-- 本次修复：升级弹窗里 <button> 缺 type="button" 导致点击触发 layui form 默认提交、页面被刷新。
+-- 同时在"一键升级"tab 加了版本选择下拉，方便用户挑任意 release 升级（大跨度更新兜底）。
