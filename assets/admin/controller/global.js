@@ -151,15 +151,8 @@
             e.stopPropagation();
             const tag = $(this).data("tag");
             if (!tag) return false;
-            message.ask(`即将从 GitHub 下载 <b>${tag}</b> 源码并覆盖部署，是否继续？`, () => {
-                util.post({
-                    url: "/admin/api/app/githubUpdate",
-                    data: {tag: tag},
-                    done: () => {
-                        message.success("升级完成，页面即将刷新");
-                        setTimeout(() => window.location.reload(), 1500);
-                    }
-                });
+            message.ask(`即将从 GitHub 下载 <b>${tag}</b> 并以<b>后台任务</b>方式覆盖部署。<br>提交后可以关掉浏览器，下次进后台会自动恢复进度。继续？`, () => {
+                _SubmitUpgrade({source: "github", tag: tag});
             });
             return false;
         });
@@ -242,17 +235,10 @@
             if (!uploadedPath) return false;
             const version = $ver.val().trim();
             const tip = version
-                ? `即将覆盖部署，并把当前版本写为 <b>${version}</b>，是否继续？`
-                : `即将覆盖部署，<b>版本号将从升级包中自动识别</b>，是否继续？`;
+                ? `即将以<b>后台任务</b>方式覆盖部署，版本号写为 <b>${version}</b>。提交后可以关掉浏览器，下次进后台会自动恢复。继续？`
+                : `即将以<b>后台任务</b>方式覆盖部署，<b>版本号将从升级包中自动识别</b>。继续？`;
             message.ask(tip, () => {
-                util.post({
-                    url: "/admin/api/app/localUpdate",
-                    data: {path: uploadedPath, version: version},
-                    done: () => {
-                        message.success("升级完成，页面即将刷新");
-                        setTimeout(() => window.location.reload(), 1500);
-                    }
-                });
+                _SubmitUpgrade({source: "local", path: uploadedPath, version: version});
             });
             return false;
         });
@@ -309,6 +295,299 @@
                     form: [{title: false, name: "list", type: "custom", complete: (form, dom) => _RenderVersionList(dom)}]
                 }
             ]
+        });
+    }
+
+    /* =============================================================
+     * 升级任务（后台执行 + 进度条 + 失败恢复）
+     * 单例：同一时刻只允许一个进度弹窗。
+     * ============================================================= */
+    let _upgradeLayerIndex = null;
+    let _upgradePollTimer = null;
+
+    const _PHASES = [
+        {key: "prepare",  label: "准备升级环境"},
+        {key: "download", label: "下载升级包"},
+        {key: "extract",  label: "解压升级包"},
+        {key: "backup",   label: "备份当前关键文件"},
+        {key: "copy",     label: "覆盖程序文件"},
+        {key: "migrate",  label: "执行数据库迁移"},
+        {key: "finalize", label: "写版本号与清缓存"},
+    ];
+
+    function _humanBytes(n) {
+        if (!n || n <= 0) return "0 B";
+        const u = ["B", "KB", "MB", "GB"];
+        let i = 0;
+        while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+        return n.toFixed(i === 0 ? 0 : 1) + " " + u[i];
+    }
+
+    function _SubmitUpgrade(payload) {
+        util.post({
+            url: "/admin/api/app/upgradeStart",
+            data: payload,
+            done: res => {
+                message.success(res.msg || "升级任务已提交");
+                // 关掉所有正在打开的 popup（一键升级 / 本地上传），换成进度弹窗
+                if (typeof layer !== "undefined" && layer.closeAll) {
+                    try { layer.closeAll('page'); } catch (e) {}
+                }
+                setTimeout(() => _OpenUpgradeProgress(), 300);
+            },
+            fail: res => message.error(res?.msg || "提交失败")
+        });
+    }
+
+    function _StopUpgradePolling() {
+        if (_upgradePollTimer) {
+            clearInterval(_upgradePollTimer);
+            _upgradePollTimer = null;
+        }
+    }
+
+    function _RenderUpgradeProgress(dom, task) {
+        if (!task) {
+            dom.html(`<div class="text-center text-muted py-5">
+                <i class="fa-duotone fa-regular fa-circle-info"></i> 当前没有升级任务
+            </div>`);
+            return;
+        }
+        const pct = Math.max(0, Math.min(100, parseInt(task.progress || 0)));
+        const status = task.status || "queued";
+        const statusBadge = {
+            queued:  `<span class="a-badge a-badge-light"><i class="fa-duotone fa-regular fa-hourglass-start"></i> 排队中</span>`,
+            running: `<span class="a-badge a-badge-primary"><i class="fa-duotone fa-regular fa-spinner fa-spin"></i> 进行中</span>`,
+            done:    `<span class="a-badge a-badge-success"><i class="fa-duotone fa-regular fa-circle-check"></i> 完成</span>`,
+            failed:  `<span class="a-badge a-badge-danger"><i class="fa-duotone fa-regular fa-circle-exclamation"></i> 失败</span>`,
+        }[status] || `<span class="a-badge a-badge-light">${status}</span>`;
+
+        const stalledBadge = task.stalled
+            ? `<span class="a-badge a-badge-warning ms-2"><i class="fa-duotone fa-regular fa-triangle-exclamation"></i> 心跳超时，可能已僵死</span>`
+            : "";
+
+        const target = task.target_version || task.tag || "?";
+        const from = task.from_version || "";
+        const src = task.source === "local" ? "本地上传" : "GitHub";
+
+        let detail = "";
+        if (task.phase === "download" && task.download_total > 0) {
+            detail = `${_humanBytes(task.download_done)} / ${_humanBytes(task.download_total)}`;
+        } else if (task.phase === "copy" && task.copy_total > 0) {
+            detail = `${task.copy_done} / ${task.copy_total} 文件`;
+        }
+
+        // 阶段列表
+        const curIdx = _PHASES.findIndex(p => p.key === task.phase);
+        const phaseList = _PHASES.map((p, i) => {
+            let icon, color;
+            if (status === "done") {
+                icon = "fa-circle-check"; color = "#2fcf94";
+            } else if (i < curIdx) {
+                icon = "fa-circle-check"; color = "#2fcf94";
+            } else if (i === curIdx) {
+                icon = status === "failed" ? "fa-circle-xmark" : "fa-spinner fa-spin";
+                color = status === "failed" ? "#e25555" : "#1589e4";
+            } else {
+                icon = "fa-circle"; color = "#ccc";
+            }
+            return `<div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
+                <i class="fa-duotone fa-regular ${icon}" style="color:${color};width:16px;"></i>
+                <span style="color:${i === curIdx ? '#333' : '#666'};">${p.label}</span>
+            </div>`;
+        }).join("");
+
+        // 错误 + 操作按钮
+        let errorBlock = "";
+        if (status === "failed") {
+            errorBlock = `<div class="alert alert-danger mt-3" style="font-size:13px;">
+                <div class="mb-2"><b><i class="fa-duotone fa-regular fa-circle-exclamation"></i> 升级失败</b>：${(task.error || "未知错误").replace(/</g, '&lt;')}</div>
+                <div class="text-muted" style="font-size:12px;">失败阶段：${task.failed_phase || task.phase || "?"}</div>
+                <div class="mt-3 d-flex" style="gap:8px;flex-wrap:wrap;">
+                    <button type="button" class="btn btn-sm btn-primary upgrade-action-continue">
+                        <i class="fa-duotone fa-regular fa-play"></i> 从失败阶段继续
+                    </button>
+                    <button type="button" class="btn btn-sm btn-warning upgrade-action-rollback" ${task.backup_dir ? '' : 'disabled title="无可用备份"'}>
+                        <i class="fa-duotone fa-regular fa-clock-rotate-left"></i> 从备份回滚 PHP 文件
+                    </button>
+                    <button type="button" class="btn btn-sm btn-light upgrade-action-discard">
+                        <i class="fa-duotone fa-regular fa-trash"></i> 丢弃任务
+                    </button>
+                </div>
+                <div class="text-muted mt-2" style="font-size:12px;">
+                    <i class="fa-duotone fa-regular fa-circle-info"></i> 回滚只还原 <code>app/</code>、<code>kernel/</code>、<code>config/app.php</code> 等 PHP 文件，<b>不动数据库</b>。如果迁移已部分执行需要还原数据库，请用你自己的数据库备份。
+                </div>
+            </div>`;
+        } else if (status === "done") {
+            errorBlock = `<div class="alert alert-success mt-3" style="font-size:13px;">
+                <i class="fa-duotone fa-regular fa-circle-check"></i> 升级成功，已写入版本号 <b>${target}</b>。
+                <div class="mt-2"><button type="button" class="btn btn-sm btn-primary upgrade-action-reload">
+                    <i class="fa-duotone fa-regular fa-arrows-rotate"></i> 刷新页面看新版本
+                </button></div>
+            </div>`;
+        } else if (task.stalled) {
+            errorBlock = `<div class="alert alert-warning mt-3" style="font-size:13px;">
+                <i class="fa-duotone fa-regular fa-triangle-exclamation"></i> 已经 ${Math.floor((Date.now()/1000 - (task.updated_at || 0)))} 秒没有进度更新，worker 可能已被 PHP-FPM 或宿主重启杀掉。
+                <div class="mt-2 d-flex" style="gap:8px;flex-wrap:wrap;">
+                    <button type="button" class="btn btn-sm btn-primary upgrade-action-continue">
+                        <i class="fa-duotone fa-regular fa-play"></i> 重新调度 worker
+                    </button>
+                    <button type="button" class="btn btn-sm btn-light upgrade-action-discard">
+                        <i class="fa-duotone fa-regular fa-trash"></i> 丢弃任务
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        const log = (task.log_tail || "").replace(/</g, '&lt;');
+
+        dom.html(`<div class="upgrade-progress">
+            <div class="d-flex align-items-center mb-3" style="gap:12px;flex-wrap:wrap;">
+                ${statusBadge}${stalledBadge}
+                <span class="text-muted" style="font-size:12px;">${src} · ${from ? from + ' → ' : ''}<b>${target}</b></span>
+            </div>
+
+            <div class="mb-2 d-flex justify-content-between" style="font-size:13px;">
+                <span><b>${task.phase_label || ""}</b></span>
+                <span class="text-muted">${detail}</span>
+            </div>
+            <div class="progress" style="height:18px;border-radius:9px;overflow:hidden;background:#eef;">
+                <div class="progress-bar ${status === 'failed' ? 'bg-danger' : (status === 'done' ? 'bg-success' : 'bg-primary')} ${status === 'running' ? 'progress-bar-striped progress-bar-animated' : ''}"
+                     role="progressbar"
+                     style="width:${pct}%;font-size:11px;line-height:18px;transition:width 0.4s ease;"
+                     aria-valuenow="${pct}" aria-valuemin="0" aria-valuemax="100">${pct}%</div>
+            </div>
+
+            <div class="row mt-4">
+                <div class="col-md-6">
+                    <div class="text-muted mb-2" style="font-size:12px;font-weight:600;">阶段流程</div>
+                    <div style="background:#fafbff;border-radius:6px;padding:8px 12px;">${phaseList}</div>
+                </div>
+                <div class="col-md-6">
+                    <div class="text-muted mb-2" style="font-size:12px;font-weight:600;">实时日志</div>
+                    <pre class="upgrade-log" style="background:#1e1e1e;color:#d4d4d4;font-size:11px;line-height:1.5;padding:10px;border-radius:6px;max-height:200px;overflow:auto;margin:0;white-space:pre-wrap;word-break:break-all;">${log || '(等待日志…)'}</pre>
+                </div>
+            </div>
+
+            ${errorBlock}
+
+            <div class="text-muted mt-3" style="font-size:11px;">
+                <i class="fa-duotone fa-regular fa-shield"></i> 任务在后台运行，可以关掉这个窗口或浏览器，下次进后台会自动弹出当前进度。<br>
+                <i class="fa-duotone fa-regular fa-circle-info"></i> 如果 worker 卡死超过 2 分钟会标记为"心跳超时"，可手动重新调度或丢弃。
+            </div>
+        </div>`);
+
+        // 绑定按钮
+        dom.find(".upgrade-action-reload").off("click").on("click", () => window.location.reload());
+        dom.find(".upgrade-action-continue").off("click").on("click", () => {
+            util.post({
+                url: "/admin/api/app/upgradeResume",
+                data: {action: "continue"},
+                done: res => { message.success(res.msg); }
+            });
+        });
+        dom.find(".upgrade-action-rollback").off("click").on("click", () => {
+            message.ask("确认从备份回滚 PHP 文件？数据库不会被还原，需要的话请自行恢复数据库备份。", () => {
+                util.post({
+                    url: "/admin/api/app/upgradeResume",
+                    data: {action: "rollback"},
+                    done: res => {
+                        message.success(res.msg);
+                        _StopUpgradePolling();
+                        setTimeout(() => window.location.reload(), 1500);
+                    }
+                });
+            }, "回滚 PHP 文件", "确认回滚");
+        });
+        dom.find(".upgrade-action-discard").off("click").on("click", () => {
+            message.ask("丢弃当前失败任务（保留已下载/解压的临时文件，仅清掉任务状态）？", () => {
+                util.post({
+                    url: "/admin/api/app/upgradeResume",
+                    data: {action: "discard"},
+                    done: res => {
+                        message.success(res.msg);
+                        _StopUpgradePolling();
+                        if (_upgradeLayerIndex !== null) {
+                            try { layer.close(_upgradeLayerIndex); } catch (e) {}
+                            _upgradeLayerIndex = null;
+                        }
+                    }
+                });
+            }, "丢弃任务", "确认丢弃");
+        });
+    }
+
+    function _OpenUpgradeProgress() {
+        // 已经开着就别重复开
+        if (_upgradeLayerIndex !== null) return;
+
+        component.popup({
+            submit: false,
+            width: "720px",
+            height: "640px",
+            maxmin: false,
+            shadeClose: false,
+            closeBtn: 1,
+            tab: [{
+                name: `<i class="fa-duotone fa-regular fa-rocket-launch"></i> 升级任务进度`,
+                form: [{
+                    title: false, name: "progress", type: "custom",
+                    complete: (form, dom) => {
+                        // 立即拉一次
+                        const tick = () => {
+                            $.ajax({
+                                url: "/admin/api/app/upgradeStatus",
+                                type: "POST",
+                                dataType: "json",
+                                success: res => {
+                                    if (!res || res.code !== 200) return;
+                                    const t = res.data;
+                                    _RenderUpgradeProgress(dom, t);
+                                    if (!t || t.status === "done" || t.status === "failed") {
+                                        _StopUpgradePolling();
+                                    }
+                                }
+                            });
+                        };
+                        tick();
+                        _StopUpgradePolling();
+                        _upgradePollTimer = setInterval(tick, 1500);
+                    }
+                }]
+            }],
+            renderComplete: (unique, index) => {
+                _upgradeLayerIndex = index;
+            },
+            end: () => {
+                _StopUpgradePolling();
+                _upgradeLayerIndex = null;
+            }
+        });
+    }
+
+    /**
+     * 进后台时检测是否有在进行/未结束的升级任务，自动弹窗。
+     * - running / queued / stalled：直接打开进度弹窗
+     * - failed：打开进度弹窗（让用户看到失败原因和恢复按钮）
+     * - done（最近 5 分钟）：toast 提示一次然后清状态
+     */
+    function _CheckActiveUpgrade() {
+        $.ajax({
+            url: "/admin/api/app/upgradeStatus",
+            type: "POST",
+            dataType: "json",
+            success: res => {
+                if (!res || res.code !== 200 || !res.data) return;
+                const t = res.data;
+                if (t.status === "running" || t.status === "queued" || t.status === "failed") {
+                    setTimeout(() => _OpenUpgradeProgress(), 400);
+                } else if (t.status === "done") {
+                    const since = Date.now() / 1000 - (t.finished_at || 0);
+                    if (since < 300) {
+                        message.success(`上次升级已成功完成（v${t.target_version || ''}）`);
+                    }
+                }
+            }
         });
     }
 
@@ -473,5 +752,6 @@
     _LodLatest();
     _LoadPluginUpdates();
     _LoadSchemaHealth();
+    _CheckActiveUpgrade();
     _Pjax();
 }();

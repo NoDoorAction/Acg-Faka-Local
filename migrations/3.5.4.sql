@@ -1,0 +1,14 @@
+-- migrations/3.5.4.sql
+-- 3.5.4 没有数据库 schema 变更，纯后端 + 前端重构。
+--
+-- 本次变更：
+-- 1. 主程序升级改成"提交任务"模型：
+--    - 新增 app/Util/UpgradeTask.php（状态机 + 原子文件持久化 + fastcgi_finish_request 续跑）
+--    - Service/Bind/App.php 拆分 updateFromZip 为 phaseDownload/Extract/Backup/Copy/Migrate/Finalize
+--    - 每个阶段写进度到 runtime/upgrade/state.json，UI 轮询 /admin/api/app/upgradeStatus 取
+-- 2. 新增端点 upgradeStart / upgradeStatus / upgradeResume / upgradeDiscard
+--    - 浏览器关掉或网络断了，server 端继续跑（fastcgi_finish_request + ignore_user_abort）
+--    - 下次进后台 _CheckActiveUpgrade 会自动弹出当前进度
+-- 3. 失败兜底：失败状态保留 zip / work_dir / backup_dir，UI 提供 [继续 / 回滚 PHP / 丢弃] 三选一
+-- 4. 前端进度弹窗：进度条 + 7 阶段流程清单 + 实时日志（最近 8KB 终端样式）
+-- 5. Http::downloadWithProgress 用 Guzzle progress 选项，节流 500ms 回调一次

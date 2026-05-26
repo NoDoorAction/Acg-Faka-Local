@@ -30,6 +30,18 @@ interface App
     public function updateFromZip(string $zipPath, string $targetVersion = ''): void;
 
     /**
+     * 任务化升级 worker，由 UpgradeTask::dispatch() 在响应发回客户端后调度。
+     * 内部按阶段读取/更新 runtime/upgrade/state.json，UI 通过 upgradeStatus 轮询展示进度。
+     */
+    public function runUpgradeTask(string $taskId): void;
+
+    /**
+     * 从指定的备份目录回滚 PHP 文件（不动数据库）。
+     * @param string $backupDir 形如 kernel/Install/Backup/20260527142233 的相对路径或绝对路径
+     */
+    public function rollbackFromBackup(string $backupDir): void;
+
+    /**
      *
      */
     public function upload(array $data): array;

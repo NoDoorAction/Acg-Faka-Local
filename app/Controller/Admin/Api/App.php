@@ -14,6 +14,7 @@ use App\Util\Opcache;
 use App\Util\PayConfig;
 use App\Util\SchemaDiff;
 use App\Util\Theme;
+use App\Util\UpgradeTask;
 use Kernel\Annotation\Inject;
 use Kernel\Annotation\Interceptor;
 use Kernel\Exception\JSONException;
@@ -187,6 +188,158 @@ class App extends Manage
         $this->app->updateFromZip($src, $version === '' ? '' : Github::normalizeVersion($version));
         ManageLog::log($this->getManage(), $version === '' ? "通过本地 zip 自动识别版本升级" : "通过本地 zip 升级到 {$version}");
         return $this->json(200, "升级完成");
+    }
+
+    /**
+     * 提交一个升级任务（异步）。
+     *
+     * 入参（form）：
+     *   source: 'github' | 'local'
+     *   tag:    GitHub release tag（source=github 时必填）
+     *   path:   本地 zip 相对路径（source=local 时必填）
+     *   version: 可选，留空时自动识别
+     *
+     * 返回 task_id；后续用 upgradeStatus 轮询进度。
+     *
+     * @throws JSONException
+     */
+    public function upgradeStart(): array
+    {
+        $source = (string)($_POST['source'] ?? 'github');
+        if (!in_array($source, ['github', 'local'], true)) {
+            throw new JSONException('source 仅支持 github / local');
+        }
+
+        $params = ['source' => $source];
+
+        if ($source === 'github') {
+            $tag = trim((string)($_POST['tag'] ?? ''));
+            if ($tag === '') {
+                throw new JSONException('缺少版本号');
+            }
+            // 预解析 URL（失败可在 worker 里再试一次），并校验 tag 存在
+            $target = null;
+            foreach (Github::listReleases() as $r) {
+                if ((string)$r['tag'] === $tag || (string)$r['version'] === $tag) {
+                    $target = $r;
+                    break;
+                }
+            }
+            if ($target === null) {
+                $latest = Github::latestRelease();
+                if ($latest !== null && ((string)$latest['tag'] === $tag || (string)$latest['version'] === $tag)) {
+                    $target = $latest;
+                }
+            }
+            if ($target === null) {
+                throw new JSONException("未在 GitHub 仓库中找到版本 {$tag}");
+            }
+            $url = Github::pickDownloadUrl($target);
+            if ($url === '') {
+                throw new JSONException('该版本未提供可下载的 zip 资源');
+            }
+            $params['tag'] = $tag;
+            $params['version'] = Github::normalizeVersion($tag);
+            $params['url'] = $url;
+        } else {
+            $rel = (string)($_POST['path'] ?? '');
+            if ($rel === '' || str_contains($rel, '..')) {
+                throw new JSONException('非法的安装包路径');
+            }
+            $src = BASE_PATH . $rel;
+            if (!is_file($src)) {
+                throw new JSONException('升级包不存在，请重新上传');
+            }
+            if (strtolower((string)pathinfo($src, PATHINFO_EXTENSION)) !== 'zip') {
+                throw new JSONException('仅支持 zip 升级包');
+            }
+            $params['local_path'] = $rel;
+            $params['version'] = trim((string)($_POST['version'] ?? '')) !== ''
+                ? Github::normalizeVersion(trim((string)$_POST['version']))
+                : '';
+        }
+
+        try {
+            $task = UpgradeTask::create($params);
+        } catch (\Throwable $e) {
+            throw new JSONException($e->getMessage());
+        }
+
+        UpgradeTask::dispatch($task['task_id']);
+        ManageLog::log($this->getManage(), '提交升级任务 ' . $source . ' ' . ($params['tag'] ?? $params['local_path'] ?? ''));
+        return $this->json(200, '升级任务已提交，请勿关闭后台', ['task_id' => $task['task_id']]);
+    }
+
+    /**
+     * 查询当前升级任务状态（轮询用）。无任务时返回 null。
+     */
+    public function upgradeStatus(): array
+    {
+        $task = UpgradeTask::withDerivedFields(UpgradeTask::load());
+        return $this->json(200, 'ok', $task);
+    }
+
+    /**
+     * 失败任务的恢复动作：continue / rollback / discard
+     *
+     * @throws JSONException
+     */
+    public function upgradeResume(): array
+    {
+        $action = (string)($_POST['action'] ?? '');
+        $task = UpgradeTask::load();
+        if ($task === null) {
+            throw new JSONException('当前没有升级任务');
+        }
+        if (($task['status'] ?? '') !== UpgradeTask::STATUS_FAILED) {
+            throw new JSONException('当前任务状态不是失败，无法恢复');
+        }
+
+        if ($action === 'discard') {
+            UpgradeTask::clear();
+            ManageLog::log($this->getManage(), '丢弃失败的升级任务 ' . ($task['task_id'] ?? ''));
+            return $this->json(200, '已丢弃，可重新发起升级');
+        }
+
+        if ($action === 'rollback') {
+            $backup = (string)($task['backup_dir'] ?? '');
+            if ($backup === '' || !is_dir($backup)) {
+                throw new JSONException('该任务没有可用备份，无法自动回滚（请从 kernel/Install/Backup 手动恢复）');
+            }
+            try {
+                $this->app->rollbackFromBackup($backup);
+            } catch (\Throwable $e) {
+                throw new JSONException('回滚失败：' . $e->getMessage());
+            }
+            ManageLog::log($this->getManage(), '从备份回滚 ' . $backup);
+            UpgradeTask::clear();
+            return $this->json(200, '回滚完成（PHP 文件已还原，数据库未动）');
+        }
+
+        if ($action === 'continue') {
+            // 从失败的 phase 重新跑。状态先重置为 queued 让 worker 接管。
+            UpgradeTask::patch([
+                'status' => UpgradeTask::STATUS_QUEUED,
+                'error'  => null,
+                'failed_phase' => null,
+            ]);
+            UpgradeTask::dispatch((string)$task['task_id']);
+            ManageLog::log($this->getManage(), '继续升级任务 ' . $task['task_id']);
+            return $this->json(200, '已重新调度升级，请等待进度刷新');
+        }
+
+        throw new JSONException('未知的 action：' . $action);
+    }
+
+    /**
+     * 强制丢弃当前升级任务（无论状态）。用于卡死/僵死时手动清场。
+     */
+    public function upgradeDiscard(): array
+    {
+        $task = UpgradeTask::load();
+        UpgradeTask::clear();
+        ManageLog::log($this->getManage(), '强制丢弃升级任务 ' . ($task['task_id'] ?? '<null>'));
+        return $this->json(200, '已清空升级任务状态');
     }
 
     /**

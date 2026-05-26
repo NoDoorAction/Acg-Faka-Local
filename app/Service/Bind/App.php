@@ -4,10 +4,13 @@ declare(strict_types=1);
 namespace App\Service\Bind;
 
 use App\Util\File;
+use App\Util\Github;
+use App\Util\Http;
 use App\Util\Migrator;
 use App\Util\Opcache;
 use App\Util\Permission;
 use App\Util\Str;
+use App\Util\UpgradeTask;
 use App\Util\Zip;
 use Kernel\Consts\Base;
 use Kernel\Exception\JSONException;
@@ -298,6 +301,395 @@ class App implements \App\Service\App
     }
 
     /**
+     * 任务化升级 worker。由 UpgradeTask::dispatch() 在响应发回客户端之后调度。
+     *
+     * 与 updateFromZip 的区别：
+     * - 全程把进度写到 state.json，前端轮询拿到阶段/百分比/日志
+     * - 每个阶段失败时 status=failed，保留 zip / work_dir / backup_dir，允许"继续"或"回滚"
+     * - 重入安全：再次调用时根据 phase 跳过已经完成的阶段
+     *
+     * @throws \Throwable
+     */
+    public function runUpgradeTask(string $taskId): void
+    {
+        $task = UpgradeTask::load();
+        if ($task === null || ($task['task_id'] ?? '') !== $taskId) {
+            return;
+        }
+        if (in_array($task['status'] ?? '', [UpgradeTask::STATUS_DONE], true)) {
+            return;
+        }
+
+        UpgradeTask::markRunning();
+        UpgradeTask::appendLog("worker 启动 pid=" . (getmypid() ?: '?') . " phase=" . ($task['phase'] ?? ''));
+
+        try {
+            // 同一次 worker 内允许从任何阶段继续。各阶段方法自身做"已完成则跳过"判断。
+            $task = $this->phaseDownload($task);
+            $task = $this->phaseExtract($task);
+            $task = $this->phaseBackup($task);
+            $task = $this->phaseCopy($task);
+            $task = $this->phaseMigrate($task);
+            $this->phaseFinalize($task);
+
+            UpgradeTask::markDone();
+            UpgradeTask::appendLog('全部阶段完成');
+        } catch (\Throwable $e) {
+            UpgradeTask::markFailed($e->getMessage());
+            throw $e;
+        }
+    }
+
+    /**
+     * 阶段 1：下载升级包（GitHub source / local source 都用同一份 zip_path 存盘）。
+     */
+    private function phaseDownload(array $task): array
+    {
+        $alreadyOk = !empty($task['zip_path']) && is_file($task['zip_path']) && filesize($task['zip_path']) > 0;
+        if ($alreadyOk) {
+            UpgradeTask::appendLog('phaseDownload: zip 已存在，跳过下载 ' . $task['zip_path']);
+            UpgradeTask::setPhase(UpgradeTask::PHASE_DOWNLOAD, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        UpgradeTask::setPhase(UpgradeTask::PHASE_DOWNLOAD, 0.0);
+
+        // 本地上传分支：直接把已上传到 runtime 的 zip 复制/挪到 work zone
+        if (($task['source'] ?? '') === 'local') {
+            $src = BASE_PATH . (string)$task['local_path'];
+            if (!is_file($src)) {
+                throw new \RuntimeException("本地升级包不存在：{$task['local_path']}");
+            }
+            if (strtolower((string)pathinfo($src, PATHINFO_EXTENSION)) !== 'zip') {
+                throw new \RuntimeException('仅支持 zip 升级包');
+            }
+            UpgradeTask::patch(['zip_path' => $src, 'download_total' => filesize($src), 'download_done' => filesize($src)]);
+            UpgradeTask::setPhase(UpgradeTask::PHASE_DOWNLOAD, 1.0);
+            UpgradeTask::appendLog('phaseDownload: 使用本地包 ' . $src);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        // GitHub 源：tag 必填，按需现拉
+        $url = (string)$task['url'];
+        if ($url === '') {
+            // 没存 url 时按 tag 现拉一次（断点续传时常见）
+            $tag = (string)$task['tag'];
+            if ($tag === '') {
+                throw new \RuntimeException('GitHub 升级缺少 tag');
+            }
+            $target = null;
+            foreach (Github::listReleases() as $r) {
+                if ((string)$r['tag'] === $tag || (string)$r['version'] === $tag) {
+                    $target = $r;
+                    break;
+                }
+            }
+            if ($target === null) {
+                $latest = Github::latestRelease();
+                if ($latest !== null && ((string)$latest['tag'] === $tag || (string)$latest['version'] === $tag)) {
+                    $target = $latest;
+                }
+            }
+            if ($target === null) {
+                throw new \RuntimeException("未在 GitHub 仓库中找到版本 {$tag}");
+            }
+            $url = Github::pickDownloadUrl($target);
+            if ($url === '') {
+                throw new \RuntimeException('该版本未提供可下载的 zip 资源');
+            }
+            UpgradeTask::patch(['url' => $url]);
+        }
+
+        $dir = BASE_PATH . '/kernel/Install/Update';
+        if (!is_dir($dir)) {
+            @mkdir($dir, 0777, true);
+        }
+        $tagSafe = preg_replace('/[^A-Za-z0-9._\-]/', '_', (string)($task['tag'] ?: 'src')) ?? 'src';
+        $zipPath = $dir . '/github-' . $tagSafe . '-' . (int)$task['created_at'] . '.zip';
+
+        // 进度回调：节流，避免每 16KB 写一次盘
+        $lastWrite = 0.0;
+        $onProgress = static function (int $downloaded, int $total) use (&$lastWrite) {
+            $now = microtime(true);
+            if ($now - $lastWrite < 0.5 && $downloaded !== $total) {
+                return;
+            }
+            $lastWrite = $now;
+            $ratio = $total > 0 ? max(0.0, min(1.0, $downloaded / $total)) : 0.0;
+            UpgradeTask::patch(['download_done' => $downloaded, 'download_total' => $total]);
+            UpgradeTask::setPhase(UpgradeTask::PHASE_DOWNLOAD, $ratio);
+        };
+
+        UpgradeTask::appendLog('phaseDownload: 开始下载 ' . $url);
+        Http::downloadWithProgress($url, $zipPath, $onProgress);
+
+        UpgradeTask::patch(['zip_path' => $zipPath]);
+        UpgradeTask::setPhase(UpgradeTask::PHASE_DOWNLOAD, 1.0);
+        UpgradeTask::appendLog('phaseDownload: 完成 ' . filesize($zipPath) . ' 字节');
+        return UpgradeTask::load() ?: $task;
+    }
+
+    /**
+     * 阶段 2：解压 zip 到临时工作目录 + 探测源根 + 确定目标版本号。
+     */
+    private function phaseExtract(array $task): array
+    {
+        if (!empty($task['work_dir']) && is_dir($task['work_dir']) && !empty($task['src_root']) && is_dir($task['src_root'])) {
+            UpgradeTask::appendLog('phaseExtract: 已解压，跳过');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_EXTRACT, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        UpgradeTask::setPhase(UpgradeTask::PHASE_EXTRACT, 0.0);
+        $zipPath = (string)$task['zip_path'];
+        if (!is_file($zipPath)) {
+            throw new \RuntimeException("升级包丢失：{$zipPath}");
+        }
+
+        $work = BASE_PATH . '/kernel/Install/Update/work-' . (int)$task['created_at'] . '-' . substr(md5($task['task_id']), 0, 6) . '/';
+        if (!is_dir($work) && !mkdir($work, 0777, true) && !is_dir($work)) {
+            throw new \RuntimeException("无法创建临时目录：{$work}");
+        }
+        if (!Zip::unzip($zipPath, $work)) {
+            throw new \RuntimeException('解压升级包失败，请检查 zip 是否完整');
+        }
+        UpgradeTask::setPhase(UpgradeTask::PHASE_EXTRACT, 0.6);
+
+        $srcRoot = $this->detectSourceRoot($work);
+        if ($srcRoot === null) {
+            throw new \RuntimeException('升级包格式不正确：未找到 index.php / composer.json');
+        }
+
+        $target = (string)$task['target_version'];
+        if ($target === '') {
+            $target = self::detectVersionFromConfig($srcRoot . '/config/app.php');
+            if ($target === '') {
+                throw new \RuntimeException('无法从升级包的 config/app.php 中识别版本号，请手动指定');
+            }
+        }
+        $target = Github::normalizeVersion($target);
+        if (!preg_match('/^[0-9A-Za-z._\-+]+$/', $target)) {
+            throw new \RuntimeException("非法的目标版本号：{$target}");
+        }
+
+        UpgradeTask::patch([
+            'work_dir'       => $work,
+            'src_root'       => $srcRoot,
+            'target_version' => $target,
+        ]);
+        UpgradeTask::setPhase(UpgradeTask::PHASE_EXTRACT, 1.0);
+        UpgradeTask::appendLog("phaseExtract: 完成 src_root={$srcRoot} target={$target}");
+        return UpgradeTask::load() ?: $task;
+    }
+
+    /**
+     * 阶段 3：备份关键文件到 kernel/Install/Backup/{stamp}/。
+     */
+    private function phaseBackup(array $task): array
+    {
+        if (!empty($task['backup_dir']) && is_dir($task['backup_dir'])) {
+            UpgradeTask::appendLog('phaseBackup: 已备份，跳过');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+        UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 0.0);
+
+        $backupRoot = BASE_PATH . '/kernel/Install/Backup';
+        if (!is_dir($backupRoot)) {
+            @mkdir($backupRoot, 0777, true);
+        }
+        $stamp = date('YmdHis');
+        $dst = $backupRoot . '/' . $stamp;
+        if (!@mkdir($dst, 0777, true) && !is_dir($dst)) {
+            UpgradeTask::appendLog('phaseBackup: 备份目录创建失败，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        $targets = [
+            'app'             => true,
+            'kernel'          => true,
+            'config/app.php'  => false,
+            'composer.json'   => false,
+            'composer.lock'   => false,
+            'index.php'       => false,
+        ];
+        $i = 0;
+        $n = count($targets);
+        foreach ($targets as $rel => $isDir) {
+            $src = BASE_PATH . '/' . $rel;
+            if (file_exists($src)) {
+                $to = $dst . '/' . $rel;
+                try {
+                    @mkdir(dirname($to), 0777, true);
+                    if ($isDir) {
+                        File::copyDirectory($src, $to);
+                    } else {
+                        @copy($src, $to);
+                    }
+                } catch (\Throwable $e) {
+                    UpgradeTask::appendLog('phaseBackup: 备份 ' . $rel . ' 失败 ' . $e->getMessage());
+                }
+            }
+            $i++;
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, $i / max(1, $n));
+        }
+        $this->trimOldBackups($backupRoot, 5);
+
+        UpgradeTask::patch(['backup_dir' => $dst]);
+        UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+        UpgradeTask::appendLog("phaseBackup: 完成 {$dst}");
+        return UpgradeTask::load() ?: $task;
+    }
+
+    /**
+     * 阶段 4：覆盖文件。safeCopy 是幂等的（覆盖式），失败重跑安全。
+     */
+    private function phaseCopy(array $task): array
+    {
+        $srcRoot = (string)($task['src_root'] ?? '');
+        if (!is_dir($srcRoot)) {
+            throw new \RuntimeException('phaseCopy: src_root 已丢失，请重新下载并解压');
+        }
+        UpgradeTask::setPhase(UpgradeTask::PHASE_COPY, 0.0);
+
+        $excludeRel = $this->buildExcludeList();
+        $total = self::countSourceFiles($srcRoot, $excludeRel);
+        $total = max(1, $total);
+        UpgradeTask::patch(['copy_total' => $total, 'copy_done' => 0]);
+
+        $done = 0;
+        $lastWrite = 0.0;
+        $onFile = static function (string $abs, string $rel) use (&$done, $total, &$lastWrite) {
+            $done++;
+            $now = microtime(true);
+            if ($now - $lastWrite < 0.3 && $done !== $total) {
+                return;
+            }
+            $lastWrite = $now;
+            UpgradeTask::patch(['copy_done' => $done]);
+            UpgradeTask::setPhase(UpgradeTask::PHASE_COPY, $done / $total);
+        };
+
+        try {
+            self::safeCopy($srcRoot, BASE_PATH, $excludeRel, '', $onFile);
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('文件覆盖失败：' . $e->getMessage(), 0, $e);
+        }
+
+        UpgradeTask::patch(['copy_done' => $total]);
+        UpgradeTask::setPhase(UpgradeTask::PHASE_COPY, 1.0);
+        UpgradeTask::appendLog("phaseCopy: 完成 {$total} 个文件");
+        return UpgradeTask::load() ?: $task;
+    }
+
+    /**
+     * 阶段 5：跑 pending migration。Migrator 自身有 applied 表去重，重跑安全。
+     */
+    private function phaseMigrate(array $task): array
+    {
+        UpgradeTask::setPhase(UpgradeTask::PHASE_MIGRATE, 0.0);
+        $from = (string)$task['from_version'];
+        $to = (string)$task['target_version'];
+
+        Migrator::ensureTable($from);
+        $pending = Migrator::pending($to);
+        $n = count($pending);
+
+        if ($n === 0) {
+            UpgradeTask::setPhase(UpgradeTask::PHASE_MIGRATE, 1.0);
+            UpgradeTask::appendLog('phaseMigrate: 无待执行迁移');
+            return UpgradeTask::load() ?: $task;
+        }
+        UpgradeTask::appendLog("phaseMigrate: {$n} 个迁移待执行");
+
+        foreach ($pending as $i => $item) {
+            UpgradeTask::patch(['phase_label' => "执行迁移 {$item['version']}.sql"]);
+            try {
+                Migrator::apply([$item]);
+            } catch (\Throwable $e) {
+                throw new \RuntimeException("迁移 {$item['version']}.sql 失败：" . $e->getMessage(), 0, $e);
+            }
+            UpgradeTask::setPhase(UpgradeTask::PHASE_MIGRATE, ($i + 1) / $n);
+            UpgradeTask::appendLog("phaseMigrate: {$item['version']}.sql ok");
+        }
+        return UpgradeTask::load() ?: $task;
+    }
+
+    /**
+     * 阶段 6：写版本号 + 清缓存 + 清理工作目录。
+     */
+    private function phaseFinalize(array $task): void
+    {
+        UpgradeTask::setPhase(UpgradeTask::PHASE_FINALIZE, 0.0);
+        $target = (string)$task['target_version'];
+        $appCfg = BASE_PATH . '/config/app.php';
+        setConfig(['version' => $target], $appCfg);
+        Opcache::invalidate($appCfg);
+        UpgradeTask::setPhase(UpgradeTask::PHASE_FINALIZE, 0.3);
+
+        $viewDir = BASE_PATH . '/runtime/view';
+        if (is_dir($viewDir)) {
+            File::delDirectory($viewDir);
+        }
+        foreach ([BASE_PATH . '/runtime/plugin/store.cache', BASE_PATH . '/runtime/plugin/update.cache'] as $cacheFile) {
+            if (is_file($cacheFile)) {
+                @unlink($cacheFile);
+            }
+        }
+        Opcache::reset();
+        UpgradeTask::setPhase(UpgradeTask::PHASE_FINALIZE, 0.7);
+
+        try {
+            Permission::grantWritableDirs();
+        } catch (\Throwable $e) {
+            UpgradeTask::appendLog('phaseFinalize: grantWritableDirs 失败 ' . $e->getMessage());
+        }
+
+        // 清工作目录与下载 zip（失败也不影响升级成功）
+        if (!empty($task['work_dir']) && is_dir($task['work_dir'])) {
+            File::delDirectory($task['work_dir']);
+        }
+        if (!empty($task['zip_path']) && is_file($task['zip_path']) && ($task['source'] ?? '') === 'github') {
+            @unlink($task['zip_path']);
+        }
+        UpgradeTask::setPhase(UpgradeTask::PHASE_FINALIZE, 1.0);
+        UpgradeTask::appendLog('phaseFinalize: 完成 version=' . $target);
+    }
+
+    /**
+     * 从备份目录把 PHP 文件回滚回去（不动数据库）。
+     */
+    public function rollbackFromBackup(string $backupDir): void
+    {
+        $abs = $backupDir;
+        if (!str_starts_with(str_replace('\\', '/', $abs), '/')
+            && !preg_match('/^[A-Za-z]:[\\\\\\/]/', $abs)) {
+            $abs = BASE_PATH . '/' . ltrim($abs, '/\\');
+        }
+        if (!is_dir($abs)) {
+            throw new \RuntimeException('备份目录不存在：' . $backupDir);
+        }
+        $targets = ['app', 'kernel', 'config/app.php', 'composer.json', 'composer.lock', 'index.php'];
+        foreach ($targets as $rel) {
+            $src = $abs . '/' . $rel;
+            $dst = BASE_PATH . '/' . $rel;
+            if (!file_exists($src)) {
+                continue;
+            }
+            if (is_dir($src)) {
+                File::copyDirectory($src, $dst);
+            } else {
+                @mkdir(dirname($dst), 0777, true);
+                @copy($src, $dst);
+                @chmod($dst, 0644);
+                Opcache::invalidate($dst);
+            }
+        }
+        Opcache::reset();
+    }
+
+    /**
      * 探测解压后的源根：优先当前目录，其次"只有一个子目录"时下钻一层（处理 GitHub zipball 包裹层）。
      */
     private function detectSourceRoot(string $work): ?string
@@ -402,8 +794,9 @@ class App implements \App\Service\App
      * 按白名单递归覆盖：只覆盖/新增，不删除目标里多余的文件。
      *
      * @param array<int, string> $excludeRel
+     * @param callable|null      $onFile 每写完一个文件回调 ($absPath, $relPath)
      */
-    private static function safeCopy(string $src, string $dst, array $excludeRel, string $relBase = ""): void
+    private static function safeCopy(string $src, string $dst, array $excludeRel, string $relBase = "", ?callable $onFile = null): void
     {
         $dir = opendir($src);
         if ($dir === false) {
@@ -428,7 +821,7 @@ class App implements \App\Service\App
                             throw new \RuntimeException("无法创建目录：{$dstPath}");
                         }
                     }
-                    self::safeCopy($srcPath, $dstPath, $excludeRel, $rel);
+                    self::safeCopy($srcPath, $dstPath, $excludeRel, $rel, $onFile);
                 } else {
                     if (!is_dir(dirname($dstPath))) {
                         @mkdir(dirname($dstPath), 0755, true);
@@ -438,11 +831,44 @@ class App implements \App\Service\App
                     }
                     @chmod($dstPath, 0644);
                     Opcache::invalidate($dstPath);
+                    if ($onFile !== null) {
+                        $onFile($dstPath, $rel);
+                    }
                 }
             }
         } finally {
             closedir($dir);
         }
+    }
+
+    /**
+     * 预数源根下需要覆盖的文件数（用于 UI 进度条总量）。排除规则与 safeCopy 一致。
+     *
+     * @param array<int, string> $excludeRel
+     */
+    private static function countSourceFiles(string $src, array $excludeRel, string $relBase = ""): int
+    {
+        $count = 0;
+        $dir = @opendir($src);
+        if ($dir === false) {
+            return 0;
+        }
+        try {
+            while (($name = readdir($dir)) !== false) {
+                if ($name === '.' || $name === '..') continue;
+                $rel = $relBase === '' ? $name : $relBase . '/' . $name;
+                if (self::isExcluded($rel, $excludeRel)) continue;
+                $path = $src . DIRECTORY_SEPARATOR . $name;
+                if (is_dir($path)) {
+                    $count += self::countSourceFiles($path, $excludeRel, $rel);
+                } else {
+                    $count++;
+                }
+            }
+        } finally {
+            closedir($dir);
+        }
+        return $count;
     }
 
     /**
