@@ -304,7 +304,7 @@ class App extends Manage
 
         if ($action === 'rollback') {
             $backup = (string)($task['backup_dir'] ?? '');
-            if ($backup === '' || !is_dir($backup)) {
+            if ($backup === '' || (!is_file($backup) && !is_dir($backup))) {
                 throw new JSONException('该任务没有可用备份，无法自动回滚（请从 kernel/Install/Backup 手动恢复）');
             }
             try {

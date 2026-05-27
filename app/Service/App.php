@@ -36,10 +36,11 @@ interface App
     public function runUpgradeTask(string $taskId): void;
 
     /**
-     * 从指定的备份目录回滚 PHP 文件（不动数据库）。
-     * @param string $backupDir 形如 kernel/Install/Backup/20260527142233 的相对路径或绝对路径
+     * 从指定的备份回滚 PHP 文件（不动数据库）。
+     * 3.5.7+ 备份是 .zip 文件（如 kernel/Install/Backup/backup-20260528142233.zip）；
+     * 3.5.6 及之前是目录（如 kernel/Install/Backup/20260527142233）。两者都接受。
      */
-    public function rollbackFromBackup(string $backupDir): void;
+    public function rollbackFromBackup(string $backupPath): void;
 
     /**
      *

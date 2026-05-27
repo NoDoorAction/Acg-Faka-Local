@@ -1,0 +1,28 @@
+-- migrations/3.5.7.sql
+-- 3.5.7 没有数据库 schema 变更。修复了 3.5.6 升级流里"备份当前关键文件"卡死的 bug。
+--
+-- 现网症状：升级走到 phaseBackup（52% 进度条），日志最后一行停在 phaseExtract:
+-- 完成，之后 200+ 秒没有任何输出，UI 标记"心跳超时，可能已僵死"。
+--
+-- 根因（app/Service/Bind/App.php:phaseBackup）：
+-- 1. 备份目标是整个 app/ + kernel/ 目录，里面装了一堆插件的 Vendor/（Paypal /
+--    Alipay SDK 等几千文件每个），实际文件数 5 万 +。
+-- 2. 用的是 File::copyDirectory 纯 PHP 逐文件 copy() + chmod()，每文件两次
+--    syscall，跑下来 3-5 分钟太正常了。
+-- 3. 进度只在 6 个 target 之间更新（app/kernel/config 等），单个 target 内部
+--    全程不心跳。UpgradeTask 的 STALL_SECONDS=120，单个 target 跑过 2 分钟就
+--    被前端标"僵死"——但 worker 其实还在干活。
+--
+-- 修复（3.5.7）：
+-- 1. 改用 ZipArchive (CM_STORE 无压缩) 把待备份文件打成单个
+--    kernel/Install/Backup/backup-{stamp}.zip。一次 IO 写盘 vs 5 万次小写。
+-- 2. 备份的文件清单复用 phaseCopy 的 buildExcludeList()——既然 copy 不会覆盖
+--    这些目录（Vendor / vendor / runtime / kernel/Install/Backup 自己），备份
+--    也就不需要保留。文件数从 5 万级砍到几千级。
+-- 3. 每写完一个文件就 setPhase（0.3s 节流），心跳频率与 phaseCopy 对齐。
+-- 4. 先写 .zip.tmp，close 成功后 rename 为 .zip，原子完成；中途 worker 死掉
+--    不会留下"半成品"被下次重跑 phaseBackup 误判为"已备份，跳过"。
+-- 5. trimOldBackups / rollbackFromBackup 同时兼容新 .zip 格式和 3.5.6 及之前
+--    遗留的目录格式，老备份不会被误删，回滚仍然可用。
+--
+-- 预期效果：之前 3-5 分钟、卡僵死的 phaseBackup，现在 5-15 秒完成、心跳稳定。

@@ -2,7 +2,7 @@
 declare (strict_types=1);
 
 return [
-    'version' => '3.5.6',
+    'version' => '3.5.7',
     'github_owner' => 'NoDoorAction',
     'github_repo' => 'Acg-Faka-Local',
     'github_token' => '',

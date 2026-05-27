@@ -495,62 +495,117 @@ class App implements \App\Service\App
     }
 
     /**
-     * 阶段 3：备份关键文件到 kernel/Install/Backup/{stamp}/。
+     * 阶段 3：备份关键文件到 kernel/Install/Backup/backup-{stamp}.zip。
+     *
+     * 3.5.7 起改为 ZipArchive 无压缩单文件归档：
+     * - 应用与 phaseCopy 一致的 buildExcludeList()，跳过 app/Pay/.../Vendor、
+     *   app/Plugin/.../Vendor、runtime、vendor 等"既不会被覆盖也不需要还原"的大目录，
+     *   把待备份文件数从 5 万级砍到几千级。
+     * - addFromString + CM_STORE：单次内存峰值仅一个文件大小；不压缩，纯磁盘 IO。
+     * - 每写完一个文件就 setPhase（0.3s 节流），心跳稳定。
+     * - 先写 .zip.tmp，close 成功后 rename 为 .zip，原子完成；中途死掉不会留下"半成品"
+     *   被下次重跑误判为"已备份"。
      */
     private function phaseBackup(array $task): array
     {
-        if (!empty($task['backup_dir']) && is_dir($task['backup_dir'])) {
-            UpgradeTask::appendLog('phaseBackup: 已备份，跳过');
+        $existing = (string)($task['backup_dir'] ?? '');
+        // 兼容两种格式：3.5.7+ 是 .zip 文件，3.5.6 及之前是目录。
+        if ($existing !== '' && (is_file($existing) || is_dir($existing))) {
+            UpgradeTask::appendLog('phaseBackup: 已备份，跳过 ' . $existing);
             UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
             return UpgradeTask::load() ?: $task;
         }
         UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 0.0);
 
-        $backupRoot = BASE_PATH . '/kernel/Install/Backup';
-        if (!is_dir($backupRoot)) {
-            @mkdir($backupRoot, 0777, true);
+        if (!class_exists('ZipArchive')) {
+            UpgradeTask::appendLog('phaseBackup: 未安装 php-zip 扩展，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
         }
-        $stamp = date('YmdHis');
-        $dst = $backupRoot . '/' . $stamp;
-        if (!@mkdir($dst, 0777, true) && !is_dir($dst)) {
+
+        $backupRoot = BASE_PATH . '/kernel/Install/Backup';
+        if (!is_dir($backupRoot) && !@mkdir($backupRoot, 0777, true) && !is_dir($backupRoot)) {
             UpgradeTask::appendLog('phaseBackup: 备份目录创建失败，跳过备份继续升级');
             UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
             return UpgradeTask::load() ?: $task;
         }
 
-        $targets = [
-            'app'             => true,
-            'kernel'          => true,
-            'config/app.php'  => false,
-            'composer.json'   => false,
-            'composer.lock'   => false,
-            'index.php'       => false,
-        ];
-        $i = 0;
-        $n = count($targets);
-        foreach ($targets as $rel => $isDir) {
-            $src = BASE_PATH . '/' . $rel;
-            if (file_exists($src)) {
-                $to = $dst . '/' . $rel;
-                try {
-                    @mkdir(dirname($to), 0777, true);
-                    if ($isDir) {
-                        File::copyDirectory($src, $to);
-                    } else {
-                        @copy($src, $to);
-                    }
-                } catch (\Throwable $e) {
-                    UpgradeTask::appendLog('phaseBackup: 备份 ' . $rel . ' 失败 ' . $e->getMessage());
+        $stamp = date('YmdHis');
+        $finalPath = $backupRoot . '/backup-' . $stamp . '.zip';
+        $tmpPath = $finalPath . '.tmp';
+
+        // 与 phaseCopy 共用同一份白名单：copy 不动的目录，就不需要备份。
+        $excludeRel = $this->buildExcludeList();
+
+        // 收集待备份文件清单（用于进度条 + 单次循环）。
+        $files = [];
+        foreach (['app', 'kernel'] as $topDir) {
+            $abs = BASE_PATH . '/' . $topDir;
+            if (is_dir($abs)) {
+                self::collectBackupFiles($abs, $excludeRel, $topDir, $files);
+            }
+        }
+        foreach (['config/app.php', 'composer.json', 'composer.lock', 'index.php'] as $rel) {
+            $abs = BASE_PATH . '/' . $rel;
+            if (is_file($abs)) {
+                $files[] = [$abs, $rel];
+            }
+        }
+
+        $total = max(1, count($files));
+        UpgradeTask::appendLog("phaseBackup: 待备份 {$total} 个文件 → {$finalPath}");
+
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpPath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            UpgradeTask::appendLog('phaseBackup: 无法创建 zip 文件，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        $done = 0;
+        $lastWrite = 0.0;
+        try {
+            foreach ($files as [$abs, $rel]) {
+                $content = @file_get_contents($abs);
+                if ($content !== false) {
+                    $zip->addFromString($rel, $content);
+                    $zip->setCompressionName($rel, \ZipArchive::CM_STORE);
+                }
+                $done++;
+                $now = microtime(true);
+                if ($now - $lastWrite >= 0.3 || $done === $total) {
+                    $lastWrite = $now;
+                    UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, $done / $total);
                 }
             }
-            $i++;
-            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, $i / max(1, $n));
+        } catch (\Throwable $e) {
+            @$zip->close();
+            @unlink($tmpPath);
+            UpgradeTask::appendLog('phaseBackup: 备份过程异常 ' . $e->getMessage() . '，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
         }
+
+        if (!$zip->close()) {
+            @unlink($tmpPath);
+            UpgradeTask::appendLog('phaseBackup: zip 写盘失败，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+
+        if (!@rename($tmpPath, $finalPath)) {
+            @unlink($tmpPath);
+            UpgradeTask::appendLog('phaseBackup: rename 失败，跳过备份继续升级');
+            UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
+            return UpgradeTask::load() ?: $task;
+        }
+        @chmod($finalPath, 0644);
+
         $this->trimOldBackups($backupRoot, 5);
 
-        UpgradeTask::patch(['backup_dir' => $dst]);
+        UpgradeTask::patch(['backup_dir' => $finalPath]);
         UpgradeTask::setPhase(UpgradeTask::PHASE_BACKUP, 1.0);
-        UpgradeTask::appendLog("phaseBackup: 完成 {$dst}");
+        UpgradeTask::appendLog("phaseBackup: 完成 {$finalPath} (" . filesize($finalPath) . " bytes, {$total} files)");
         return UpgradeTask::load() ?: $task;
     }
 
@@ -670,35 +725,62 @@ class App implements \App\Service\App
     }
 
     /**
-     * 从备份目录把 PHP 文件回滚回去（不动数据库）。
+     * 从备份把 PHP 文件回滚回去（不动数据库）。
+     * 支持两种格式：
+     * - 3.5.7+：单个 backup-*.zip 文件，直接 extractTo BASE_PATH。
+     * - 3.5.6 及之前：备份目录，逐目录 copyDirectory。
      */
-    public function rollbackFromBackup(string $backupDir): void
+    public function rollbackFromBackup(string $backupPath): void
     {
-        $abs = $backupDir;
+        $abs = $backupPath;
         if (!str_starts_with(str_replace('\\', '/', $abs), '/')
             && !preg_match('/^[A-Za-z]:[\\\\\\/]/', $abs)) {
             $abs = BASE_PATH . '/' . ltrim($abs, '/\\');
         }
-        if (!is_dir($abs)) {
-            throw new \RuntimeException('备份目录不存在：' . $backupDir);
-        }
-        $targets = ['app', 'kernel', 'config/app.php', 'composer.json', 'composer.lock', 'index.php'];
-        foreach ($targets as $rel) {
-            $src = $abs . '/' . $rel;
-            $dst = BASE_PATH . '/' . $rel;
-            if (!file_exists($src)) {
-                continue;
+
+        if (is_file($abs)) {
+            // 新格式：.zip 备份
+            if (!class_exists('ZipArchive')) {
+                throw new \RuntimeException('未安装 php-zip 扩展，无法解压备份');
             }
-            if (is_dir($src)) {
-                File::copyDirectory($src, $dst);
-            } else {
-                @mkdir(dirname($dst), 0777, true);
-                @copy($src, $dst);
-                @chmod($dst, 0644);
-                Opcache::invalidate($dst);
+            $zip = new \ZipArchive();
+            if ($zip->open($abs) !== true) {
+                throw new \RuntimeException('备份文件无法打开：' . $backupPath);
             }
+            try {
+                if (!$zip->extractTo(BASE_PATH)) {
+                    throw new \RuntimeException('备份文件解压失败');
+                }
+            } finally {
+                $zip->close();
+            }
+            Opcache::reset();
+            return;
         }
-        Opcache::reset();
+
+        if (is_dir($abs)) {
+            // 老格式：目录备份
+            $targets = ['app', 'kernel', 'config/app.php', 'composer.json', 'composer.lock', 'index.php'];
+            foreach ($targets as $rel) {
+                $src = $abs . '/' . $rel;
+                $dst = BASE_PATH . '/' . $rel;
+                if (!file_exists($src)) {
+                    continue;
+                }
+                if (is_dir($src)) {
+                    File::copyDirectory($src, $dst);
+                } else {
+                    @mkdir(dirname($dst), 0777, true);
+                    @copy($src, $dst);
+                    @chmod($dst, 0644);
+                    Opcache::invalidate($dst);
+                }
+            }
+            Opcache::reset();
+            return;
+        }
+
+        throw new \RuntimeException('备份路径不存在：' . $backupPath);
     }
 
     /**
@@ -769,14 +851,30 @@ class App implements \App\Service\App
         if (!is_dir($backupRoot)) {
             return;
         }
-        $items = array_values(array_filter((array)scandir($backupRoot) ?: [], fn($n) => is_string($n) && $n !== '.' && $n !== '..' && is_dir($backupRoot . "/" . $n)));
+        // 同时收集两种格式：3.5.7+ 的 backup-*.zip 文件 + 3.5.6 及之前的目录。
+        // 文件名都是按 YmdHis 排序的，sort() 即可按时间老→新排列。
+        $items = [];
+        foreach ((array)scandir($backupRoot) ?: [] as $n) {
+            if (!is_string($n) || $n === '.' || $n === '..') {
+                continue;
+            }
+            $full = $backupRoot . '/' . $n;
+            if (is_dir($full) || (is_file($full) && str_ends_with($n, '.zip'))) {
+                $items[] = $n;
+            }
+        }
         sort($items);
         $excess = count($items) - $keep;
         if ($excess <= 0) {
             return;
         }
         for ($i = 0; $i < $excess; $i++) {
-            File::delDirectory($backupRoot . "/" . $items[$i]);
+            $full = $backupRoot . '/' . $items[$i];
+            if (is_dir($full)) {
+                File::delDirectory($full);
+            } else {
+                @unlink($full);
+            }
         }
     }
 
@@ -881,6 +979,40 @@ class App implements \App\Service\App
             closedir($dir);
         }
         return $count;
+    }
+
+    /**
+     * 递归收集 phaseBackup 需要打进 zip 的文件清单。
+     * 排除规则与 safeCopy / countSourceFiles 一致——既然 phaseCopy 不会覆盖它们，备份也就不用保留。
+     *
+     * @param array<int, string>          $excludeRel
+     * @param array<int, array{0:string,1:string}> $out  [absPath, relPath] 元组累积器
+     */
+    private static function collectBackupFiles(string $absDir, array $excludeRel, string $relBase, array &$out): void
+    {
+        $dir = @opendir($absDir);
+        if ($dir === false) {
+            return;
+        }
+        try {
+            while (($name = readdir($dir)) !== false) {
+                if ($name === '.' || $name === '..') {
+                    continue;
+                }
+                $rel = $relBase === '' ? $name : $relBase . '/' . $name;
+                if (self::isExcluded($rel, $excludeRel)) {
+                    continue;
+                }
+                $abs = $absDir . DIRECTORY_SEPARATOR . $name;
+                if (is_dir($abs)) {
+                    self::collectBackupFiles($abs, $excludeRel, $rel, $out);
+                } else {
+                    $out[] = [$abs, $rel];
+                }
+            }
+        } finally {
+            closedir($dir);
+        }
     }
 
     /**
