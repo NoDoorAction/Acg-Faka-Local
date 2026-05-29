@@ -132,7 +132,7 @@ class Index extends User
                 'level_disable', 'level_price', 'hide', 'owner', 'inventory_hidden', "recommend", 'category_id', 'stock', 'shared_id'
             ])
             ->withCount(['order as order_sold' => function (Builder $relation) {
-                $relation->where("delivery_status", 1);
+                $relation->where("delivery_status", 1)->select(Order::query()->raw("COALESCE(sum(card_num),0) as order_sold"));
             }]);
         if ($limit == 0) {
             $commodity = $commodity
