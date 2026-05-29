@@ -18,14 +18,14 @@
 ## 前提概要
 > 本分支程序严格遵守ACG-FAKA系统法律许可，基于 MIT 协议开源，并且完全免费。该程序的初衷是为开发者提供学习和研究的机会。未取得合法资质，严禁将本程序用于任何商业用途，尤其是禁止利用本程序搭建平台进行商品销售。
 >
-> 为什么我们会启动这个项目？详细请看该文档[https://github.com/NoDoorAction/Acg-Faka-Local/blob/main/Problem.md]
+> 为什么我们会启动这个项目？详细请看该[文档](https://github.com/NoDoorAction/Acg-Faka-Local/blob/main/Problem.md)
 >
 > 用户在使用或学习本程序时，必须严格遵守法律法规。我们提倡依法行事，尊重法律，坚守法律，避免对社会产生不良影响。
 >
 > 使用本程序即表示您已充分理解并同意本分支及原始版本法律声明的所有内容。
 
 ## 快速体验
-- 前台演示：[[http://162.14.111.118:91](https://acg.nodooraction.org/)]
+- 前台演示：[https://acg.nodooraction.org/](https://acg.nodooraction.org/)]
 - 文档地址：[https://faka.wiki](https://faka.wiki)
 
 ## 功能简介
@@ -78,5 +78,4 @@ location / {
 - 安装完成后，后台地址是：`https://你的域名/admin`
 
 ## 更多支持
-- 交流QQ群：970103572
 - [Telegram](http://t.me/mcyofficial)
