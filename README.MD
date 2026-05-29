@@ -26,7 +26,7 @@
 
 ## 快速体验
 - 前台演示：[https://acg.nodooraction.org/](https://acg.nodooraction.org/)
-- 文档地址：[https://faka.wiki](https://faka.wiki)
+- 文档地址：[开发规范](https://github.com/NoDoorAction/Acg-Faka-Local/blob/main/Problem.md#%E5%BC%80%E5%8F%91%E8%A7%84%E8%8C%83)
 
 ## 功能简介
 - 在严格基于**ACG-FAKA**的原始代码上，我们仅对其上报，联网部分进行了移除，**对其商业闭源代码在基于MIT许可证的前提下进行了反混淆**，以下是原始功能。
