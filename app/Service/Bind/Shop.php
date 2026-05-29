@@ -150,7 +150,7 @@ class Shop implements \App\Service\Shop
                 "seckill_start_time", "seckill_end_time", "draft_status", "draft_premium", "inventory_hidden",
                 "widget", "minimum", "maximum", "shared_sync", "config", "stock", "code", "shared_amount_sync", "shared_config_sync"])
             ->withCount(['order as order_sold' => function (Builder $relation) {
-                $relation->where("delivery_status", 1);
+                $relation->where("delivery_status", 1)->select(\App\Model\Order::query()->raw("COALESCE(sum(card_num),0) as order_sold"));
             }]);
 
         if (is_int($commodityId)) {
