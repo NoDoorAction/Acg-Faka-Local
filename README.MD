@@ -50,7 +50,7 @@
 ## 安装教程
 
 - 在安装之前，请检查你的系统环境，`php>=8.0`，`MySQL版本>=5.6[不推荐5.6后续升级可能会有问题，推荐5.7或者8.0]`，因为使用了大量的PHP8注解以及PHP8的新特性，所以php版本不得不从8.0起，这里还需要注意。
-- 在发布页[https://github.com/NoDoorAction/Acg-Faka-Local/releases/]内,overlay.zip为覆盖包，如果您需要安装则下载下方Source code压缩包到您的服务器，并进行解压，设置运行目录。
+- 在(发布页)[https://github.com/NoDoorAction/Acg-Faka-Local/releases/]内,overlay.zip为覆盖包，如果您需要安装则下载下方Source code压缩包到您的服务器，并进行解压，设置运行目录。
 - 以上步骤完成后，然后配置伪静态，Apache无需配置，根目录已经有.htaccess文件了，但如果你是Nginx，则需要配置伪静态。
 - 下面是Nginx伪静态规则：
 ```
@@ -78,4 +78,4 @@ location / {
 - 安装完成后，后台地址是：`https://你的域名/admin`
 
 ## 更多支持
-- [Telegram](http://t.me/mcyofficial)
+- 暂无，如果您发现了任何问题请在issue中提出，开发者会及时回复。
