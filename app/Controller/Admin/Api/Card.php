@@ -107,6 +107,10 @@ class Card extends Manage
         }
         $count = count($cards);
 
+        if ($count > 100000) {
+            throw new JSONException('(`･ω･´)单次导入卡密数量过多，请分批导入');
+        }
+
         $success = 0;
         $error = 0;
         $date = Date::current();

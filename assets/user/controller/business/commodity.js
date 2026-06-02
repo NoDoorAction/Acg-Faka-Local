@@ -295,6 +295,158 @@
         });
     }
 
+    const bindTxtCardImport = (form, dom) => {
+        const TXT_IMPORT_LINE = "line";
+        const TXT_IMPORT_FILE = "file";
+        dom.html(`<div class="d-flex flex-column gap-2">
+            <input type="hidden" class="txt-import-mode" name="txt_import_mode" value="line">
+            <input type="file" class="txt-card-files d-none" accept=".txt,text/plain" multiple>
+            <div class="d-flex align-items-center gap-3 flex-wrap small">
+                <label class="d-inline-flex align-items-center gap-1 mb-0">
+                    <input type="radio" class="txt-card-mode" name="txt_card_mode_${form.getUnique()}" data-mode="line" checked>
+                    <span>\u4e00\u884c\u4e00\u6761\u5361\u5bc6</span>
+                </label>
+                <label class="d-inline-flex align-items-center gap-1 mb-0">
+                    <input type="radio" class="txt-card-mode" name="txt_card_mode_${form.getUnique()}" data-mode="file">
+                    <span>\u4e00\u4e2aTXT\u6587\u4ef6\u4e00\u6761\u5361\u5bc6</span>
+                </label>
+            </div>
+            <div class="d-flex align-items-center gap-2 flex-wrap">
+                <button type="button" class="btn btn-sm btn-light-primary txt-card-select">
+                    ${util.icon("fa-duotone fa-regular fa-file-lines me-1")}选择TXT文件
+                </button>
+                <span class="text-muted small txt-card-status">TXT内每个非空行会作为一条卡密追加到下方卡密信息</span>
+            </div>
+        </div>`);
+
+        const normalizeCardText = text => String(text || "")
+            .replace(/^\uFEFF/, "")
+            .replace(/\r\n/g, "\n")
+            .replace(/\r/g, "\n")
+            .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+            .trim();
+        const normalizeCardLine = line => normalizeCardText(line);
+        const safeDisplayName = file => String(file?.name || "TXT文件")
+            .replace(/[\x00-\x1F\x7F<>"'`&]/g, "_")
+            .slice(0, 120);
+
+        const input = dom.find(".txt-card-files");
+        const status = dom.find(".txt-card-status");
+        const modeInput = dom.find(".txt-import-mode");
+        const mode = () => modeInput.val() === TXT_IMPORT_FILE ? TXT_IMPORT_FILE : TXT_IMPORT_LINE;
+        const setFileModeCards = list => {
+            dom.find(".txt-card-file-value").remove();
+            list.forEach(card => {
+                $("<input>", {
+                    type: "hidden",
+                    class: "txt-card-file-value",
+                    name: "txt_file_cards[]"
+                }).val(card).appendTo(dom);
+            });
+        };
+        const modeTips = {
+            [TXT_IMPORT_LINE]: "\u5f53\u524d\u6a21\u5f0f\uff1aTXT\u5185\u6bcf\u4e2a\u975e\u7a7a\u884c\u4f1a\u4f5c\u4e3a\u4e00\u6761\u5361\u5bc6",
+            [TXT_IMPORT_FILE]: "\u5f53\u524d\u6a21\u5f0f\uff1a\u6bcf\u4e2aTXT\u6587\u4ef6\u4f1a\u4f5c\u4e3a\u4e00\u6761\u5361\u5bc6"
+        };
+        dom.find(".txt-card-mode").on("change", function () {
+            if (!this.checked) {
+                return;
+            }
+            modeInput.val($(this).data("mode") === TXT_IMPORT_FILE ? TXT_IMPORT_FILE : TXT_IMPORT_LINE);
+            setFileModeCards([]);
+            status.text(modeTips[mode()]);
+        });
+        dom.find(".txt-card-select").on("click", () => input.trigger("click"));
+        input.on("change", function () {
+            const files = Array.from(this.files || []);
+            if (files.length === 0) {
+                return;
+            }
+
+            // File size limit: 5MB
+            const MAX_FILE_SIZE = 5 * 1024 * 1024;
+            const MAX_LINES = 10000;
+
+            Promise.all(files.map(file => new Promise(resolve => {
+                const fileName = safeDisplayName(file);
+                const isTextFile = /\.txt$/i.test(file.name) || file.type === "text/plain";
+                if (!isTextFile) {
+                    resolve(null);
+                    return;
+                }
+
+                // Check file size limit
+                if (file.size > MAX_FILE_SIZE) {
+                    message.warning(`\u6587\u4EF6 ${fileName} \u8D85\u8FC75MB\u9650\u5236\uFF0C\u5DF2\u8DF3\u8FC7`);
+                    resolve(null);
+                    return;
+                }
+
+                const reader = new FileReader();
+                reader.onload = event => {
+                    try {
+                        const text = normalizeCardText(event.target.result || "");
+                        if (mode() === TXT_IMPORT_FILE) {
+                            resolve(text ? [text] : []);
+                            return;
+                        }
+
+                        const lines = text
+                            .replace(/^\uFEFF/, "")
+                            .trim()
+                            .replace(/\r\n/g, "\n")
+                            .replace(/\r/g, "\n")
+                            .split("\n")
+                            .map(normalizeCardLine)
+                            .filter(Boolean);
+
+                        // Apply line limit
+                        if (lines.length > MAX_LINES) {
+                            message.warning(`\u6587\u4EF6 ${fileName} \u8D85\u8FC7${MAX_LINES}\u884C\u9650\u5236\uFF0C\u4EC5\u5BFC\u5165\u524D${MAX_LINES}\u884C`);
+                            resolve(lines.slice(0, MAX_LINES));
+                        } else {
+                            resolve(lines);
+                        }
+                    } catch (error) {
+                        message.error(`\u8BFB\u53D6\u6587\u4EF6 ${fileName} \u5931\u8D25: ${error.message}`);
+                        resolve(null);
+                    }
+                };
+                reader.onerror = () => {
+                    message.error(`\u8BFB\u53D6\u6587\u4EF6 ${fileName} \u5931\u8D25\uFF0C\u8BF7\u786E\u4FDD\u6587\u4EF6\u4E3AUTF-8\u7F16\u7801`);
+                    resolve(null);
+                };
+                reader.readAsText(file, 'UTF-8'); // Specify UTF-8 encoding
+            }))).then(groups => {
+                const importMode = mode();
+                const list = [].concat.apply([], groups).filter(Boolean);
+                if (list.length === 0) {
+                    status.text("未读取到有效TXT卡密");
+                    message.warning("未读取到有效TXT卡密");
+                    return;
+                }
+
+                // file 模式以 txt_file_cards[] 隐藏域为唯一数据源；line 模式才写入 secret 文本域，避免同一份数据重复提交
+                if (importMode === TXT_IMPORT_FILE) {
+                    const existingFileCards = dom.find(".txt-card-file-value").map((_, item) => $(item).val()).get();
+                    setFileModeCards(existingFileCards.concat(list));
+                    status.text(`\u5df2\u8ffd\u52a0 ${list.length} \u4e2aTXT\u6587\u4ef6\u5361\u5bc6`);
+                    message.success(`\u5df2\u8ffd\u52a0 ${list.length} \u4e2aTXT\u6587\u4ef6\u5361\u5bc6`);
+                    input.val("");
+                    return;
+                }
+                const textarea = $(`.${form.getUnique()} textarea[name=secret]`);
+                const current = textarea.val() || "";
+                const next = current ? `${current.replace(/\s+$/, "")}\n${list.join("\n")}` : list.join("\n");
+                form.setTextarea("secret", next);
+                setFileModeCards([]);
+                status.text(`已追加 ${list.length} 条TXT卡密`);
+                message.success(`已追加 ${list.length} 条TXT卡密`);
+                input.val("");
+            });
+        });
+    };
+
     const uploadCard = (commodityId) => {
         component.popup({
             submit: '/user/api/card/save',
@@ -453,6 +605,13 @@ ACC_JP_6M_0KLD-22MM-PP31║地区:日区·时长:6个月
         </div>
       </div>`);
                             }
+                        },
+                        {
+                            title: "TXT导入",
+                            name: "txt_import",
+                            type: "custom",
+                            submit: false,
+                            complete: bindTxtCardImport
                         },
                         {
                             title: "卡密信息",

@@ -658,11 +658,7 @@
                     return;
                 }
 
-                const textarea = $(`.${form.getUnique()} textarea[name=secret]`);
-                const current = textarea.val() || "";
-                const separator = importMode === TXT_IMPORT_FILE ? "\n\n" : "\n";
-                const next = current ? `${current.replace(/\s+$/, "")}${separator}${list.join(separator)}` : list.join(separator);
-                form.setTextarea("secret", next);
+                // file 模式以 txt_file_cards[] 隐藏域为唯一数据源；line 模式才写入 secret 文本域，避免同一份数据重复提交
                 if (importMode === TXT_IMPORT_FILE) {
                     const existingFileCards = dom.find(".txt-card-file-value").map((_, item) => $(item).val()).get();
                     setFileModeCards(existingFileCards.concat(list));
@@ -671,6 +667,10 @@
                     input.val("");
                     return;
                 }
+                const textarea = $(`.${form.getUnique()} textarea[name=secret]`);
+                const current = textarea.val() || "";
+                const next = current ? `${current.replace(/\s+$/, "")}\n${list.join("\n")}` : list.join("\n");
+                form.setTextarea("secret", next);
                 setFileModeCards([]);
                 status.text(`已追加 ${list.length} 条TXT卡密`);
                 message.success(`已追加 ${list.length} 条TXT卡密`);
