@@ -83,20 +83,33 @@ class Card extends Manage
         $race = $raceGetMode == 1 ? $request->post("race_input", Filter::NORMAL) : $request->post("race", Filter::NORMAL);
         $sku = $request->post("sku", Filter::NORMAL) ?: [];
         $cardType = $request->post("card_type", Filter::INTEGER);
+        $txtImportMode = (string)$request->post("txt_import_mode", Filter::NORMAL);
+        $txtFileCards = $request->post("txt_file_cards", Filter::NORMAL);
 
         if ($commodityId == 0) {
             throw new JSONException('(`･ω･´)请选择商品');
         }
 
-        $cards = trim(trim((string)$request->post("secret", Filter::NORMAL)), PHP_EOL);
+        $cardText = trim(trim((string)$request->post("secret", Filter::NORMAL)), PHP_EOL);
 
         //进行批量插入
-        if ($cards == '') {
+        if ($cardText == '' && !($txtImportMode === 'file' && is_array($txtFileCards) && count($txtFileCards) > 0)) {
             throw new JSONException('(`･ω･´)请至少添加1条卡密信息哦');
         }
 
-        $cards = explode(PHP_EOL, $cards);
+        if ($txtImportMode === 'file') {
+            $cards = is_array($txtFileCards) && count($txtFileCards) > 0 ? $txtFileCards : [$cardText];
+            $cards = array_map(static function ($card) {
+                return trim(trim(str_replace(["\r\n", "\r"], "\n", (string)$card)), PHP_EOL);
+            }, $cards);
+        } else {
+            $cards = explode(PHP_EOL, $cardText);
+        }
         $count = count($cards);
+
+        if ($count > 100000) {
+            throw new JSONException('(`･ω･´)单次导入卡密数量过多，请分批导入');
+        }
 
         $success = 0;
         $error = 0;
